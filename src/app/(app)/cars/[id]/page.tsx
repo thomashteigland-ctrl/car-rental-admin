@@ -21,7 +21,7 @@ export default async function CarDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const [car, marketModels] = await Promise.all([
+  const [car, rawMarketModels] = await Promise.all([
     prisma.car.findUnique({
       where: { id },
       include: {
@@ -40,11 +40,25 @@ export default async function CarDetailPage({
       },
     }),
     prisma.marketModel.findMany({
+      where: { hidden: false },
       orderBy: { name: "asc" },
       select: { id: true, name: true, variant: true },
     }),
   ]);
   if (!car) notFound();
+
+  // Keep a linked-but-hidden model in the dropdown so the selection is preserved.
+  const marketModels =
+    car.marketModel && car.marketModel.hidden
+      ? [
+          {
+            id: car.marketModel.id,
+            name: `${car.marketModel.name} (hidden)`,
+            variant: car.marketModel.variant,
+          },
+          ...rawMarketModels,
+        ]
+      : rawMarketModels;
 
   const dep = await resolveCarDepLive({
     purchasePriceOre: car.purchasePriceOre,

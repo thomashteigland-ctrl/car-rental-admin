@@ -77,6 +77,9 @@ export async function resolveRegistrationClass(
 export type ScrapeModelResult = {
   listings: ParsedListing[];
   pages: number;
+  /** True when every expected search page was fetched — safe to mark missing IDs sold. */
+  complete: boolean;
+  variant: string;
 };
 
 export async function scrapeModel(
@@ -95,13 +98,20 @@ export async function scrapeModel(
 
   const all: ParsedListing[] = [];
   let page = 1;
+  let totalPages = MAX_PAGES;
+  let hitsKnown = false;
+  let cappedByMaxPages = false;
+  let fetchFailed = false;
 
-  while (page <= MAX_PAGES) {
-    await onProgress?.(`${label}: fetching page ${page}…`);
+  while (page <= totalPages) {
+    await onProgress?.(
+      `${label}: page ${page}/${totalPages === MAX_PAGES && !hitsKnown ? "?" : totalPages}`,
+    );
     let html: string;
     try {
       html = await fetchPage(params, page);
     } catch (e) {
+      fetchFailed = true;
       await onProgress?.(
         `${label}: request failed — ${e instanceof Error ? e.message : e}`,
       );
@@ -110,10 +120,48 @@ export async function scrapeModel(
 
     const listings = parseListings(html, variant);
     if (listings.length === 0) break;
+
+    if (page === 1) {
+      const hits = countSearchHits(html);
+      if (hits != null && hits > 0) {
+        hitsKnown = true;
+        const needed = Math.ceil(hits / listings.length);
+        cappedByMaxPages = needed > MAX_PAGES;
+        totalPages = Math.min(MAX_PAGES, needed);
+      }
+    }
+
     all.push(...listings);
     page += 1;
-    if (page <= MAX_PAGES) await sleep(REQUEST_DELAY_MS);
+    if (page <= totalPages) await sleep(REQUEST_DELAY_MS);
   }
 
-  return { listings: all, pages: page - 1 };
+  // Only treat as complete when hit-count pagination finished without errors
+  // and was not truncated by MAX_PAGES. Partial scrapes must not mark sold.
+  const complete =
+    !fetchFailed && hitsKnown && !cappedByMaxPages && page > totalPages;
+
+  return { listings: all, pages: page - 1, complete, variant };
+}
+
+/** Run async work over items with a fixed concurrency limit. */
+export async function mapPool<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const workers = Array.from(
+    { length: Math.min(concurrency, Math.max(items.length, 1)) },
+    async () => {
+      while (true) {
+        const i = next++;
+        if (i >= items.length) return;
+        results[i] = await fn(items[i], i);
+      }
+    },
+  );
+  await Promise.all(workers);
+  return results;
 }

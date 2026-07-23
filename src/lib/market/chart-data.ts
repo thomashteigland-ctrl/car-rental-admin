@@ -38,7 +38,10 @@ function priceStatsFromHistory(
 
 export async function loadMarketChartData() {
   const [models, listings] = await Promise.all([
-    prisma.marketModel.findMany({ orderBy: { name: "asc" } }),
+    prisma.marketModel.findMany({
+      where: { hidden: false },
+      orderBy: { name: "asc" },
+    }),
     prisma.marketListing.findMany({
       include: {
         priceHistory: { orderBy: { observedDate: "asc" } },
@@ -47,6 +50,7 @@ export async function loadMarketChartData() {
   ]);
 
   const labels = Object.fromEntries(models.map((m) => [m.variant, m.name]));
+  const visibleVariants = new Set(models.map((m) => m.variant));
   const today = todayIso();
 
   const activeRaw: ChartListing[] = [];
@@ -59,6 +63,7 @@ export async function loadMarketChartData() {
 
   for (const row of listings) {
     if (row.km == null) continue;
+    if (!visibleVariants.has(row.variant)) continue;
     const fuelGroup = fuelGroupFor(row.fuel || "Diesel");
     const stats = priceStatsFromHistory(row.priceHistory);
     const isSold = Boolean(row.status && row.status !== "active");

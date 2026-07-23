@@ -78,6 +78,8 @@ export async function upsertMarketModelFromInput(opts: {
       data: {
         name: opts.name?.trim() || existing.name,
         params,
+        // Re-adding a variant unhides it so it is scraped again.
+        hidden: false,
       },
     });
     return {

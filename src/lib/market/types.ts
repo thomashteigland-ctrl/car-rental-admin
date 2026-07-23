@@ -69,7 +69,10 @@ export const WLTP_BUCKETS = [
 export const LISTING_URL = "https://www.finn.no/mobility/item/{id}";
 export const BASE_URL = "https://www.finn.no/mobility/search/car";
 export const MAX_PAGES = 15;
-export const REQUEST_DELAY_MS = 1500;
+/** Pause between FINN page fetches within one model (keep polite, but don't crawl). */
+export const REQUEST_DELAY_MS = 350;
+/** How many models to scrape at once. */
+export const MODEL_CONCURRENCY = 3;
 export const MIN_FIT_ROWS = 8;
 
 export const DEFAULT_SEARCH_PARAMS: SearchParams = {

@@ -184,6 +184,8 @@ model MarketModel {
   variant   String   @unique
   name      String
   params    Json
+  /** Hidden models are excluded from scrape and the market graph. */
+  hidden    Boolean  @default(false)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

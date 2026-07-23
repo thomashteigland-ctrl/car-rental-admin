@@ -1,5 +1,13 @@
 import * as cheerio from "cheerio";
+import type { AnyNode } from "domhandler";
 import type { ParsedListing } from "./types";
+
+/** FINN card meta: "2024 ∙ 21 000 km" (year may be glued to prior word after cheerio .text()). */
+const YEAR_KM_RE =
+  /((?:19|20)\d{2})\s*[∙·]\s*([\d\s\u00a0]*\d[\d\s\u00a0]*)\s*km\b(?!\s*rekkevidde)/i;
+
+/** Year before the bullet meta separator when odometer is missing: "2023 ∙ El ∙ …". */
+const YEAR_META_RE = /((?:19|20)\d{2})\s*[∙·]/;
 
 export function fuelGroupFor(fuel: string): "ICE" | "BEV" {
   const f = (fuel || "").toLowerCase();
@@ -16,15 +24,40 @@ export function wltpBucket(wltpKm: number | null): string {
   return "320_plus";
 }
 
-export function parseKm(text: string): number | null {
-  const yearKm = text.match(
-    /\b(?:19|20)\d{2}\s*[∙·]\s*([\d\s\u00a0]+)\s*km\b(?!\s*rekkevidde)/i,
-  );
+/** Cheerio's .text() glues adjacent blocks (WEBASTO2024); insert spaces like BeautifulSoup. */
+function cardPlainText($: cheerio.CheerioAPI, card: AnyNode): string {
+  const html = $(card).html();
+  if (!html) return $(card).text().replace(/\s+/g, " ").trim();
+  return html
+    .replace(/&nbsp;/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function parseYearAndKm(text: string): {
+  year: number | null;
+  km: number | null;
+} {
+  const yearKm = text.match(YEAR_KM_RE);
   if (yearKm) {
-    return Number(yearKm[1].replace(/[\s\u00a0]/g, ""));
+    return {
+      year: Number(yearKm[1]),
+      km: Number(yearKm[2].replace(/[\s\u00a0]/g, "")),
+    };
   }
 
-  const re = /([\d\s\u00a0]+)\s*km\b/gi;
+  const yearMeta = text.match(YEAR_META_RE);
+  const year = yearMeta ? Number(yearMeta[1]) : null;
+  return { year, km: parseKmFallback(text) };
+}
+
+export function parseKm(text: string): number | null {
+  return parseYearAndKm(text).km;
+}
+
+function parseKmFallback(text: string): number | null {
+  const re = /([\d\s\u00a0]*\d[\d\s\u00a0]*)\s*km\b/gi;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text))) {
     const after = text.slice(m.index + m[0].length, m.index + m[0].length + 20);
@@ -33,6 +66,8 @@ export function parseKm(text: string): number | null {
     if (/WLTP/i.test(before) || /^\s*WLTP/i.test(after)) continue;
     const raw = m[1];
     const val = Number(raw.replace(/[\s\u00a0]/g, ""));
+    if (!Number.isFinite(val)) continue;
+    // Skip bare WLTP-sized numbers without thousand-separators.
     if (val >= 150 && val <= 450 && !/[\s\u00a0]/.test(raw)) continue;
     return val;
   }
@@ -69,6 +104,15 @@ export function parseTransmission(text: string): string | null {
   return null;
 }
 
+/** FINN sold badge — keep last known price when the card still shows kr. */
+export function listingStatus(
+  text: string,
+  price: number | null,
+): "active" | "sold" | "sold_no_price" {
+  if (!/solgt/i.test(text)) return "active";
+  return price == null ? "sold_no_price" : "sold";
+}
+
 export function countSearchHits(html: string): number | null {
   let m = html.match(/>\s*(\d[\d\s]*)<\s*\/\s*span>\s*treff/i);
   if (!m) {
@@ -103,7 +147,7 @@ export function parseListings(html: string, variant: string): ParsedListing[] {
     if (seen.has(adId)) return;
     seen.add(adId);
 
-    const text = $card.text().replace(/\s+/g, " ").trim();
+    const text = cardPlainText($, card);
     if (isProaceCity(text)) {
       listings.push({
         id: adId,
@@ -124,13 +168,10 @@ export function parseListings(html: string, variant: string): ParsedListing[] {
     }
 
     const title = link.text().trim() || null;
-    const yearMatch = text.match(/\b((?:19|20)\d{2})\b/);
-    const year = yearMatch ? Number(yearMatch[1]) : null;
-    const km = parseKm(text);
+    const { year, km } = parseYearAndKm(text);
     const price = parsePrice(text);
     const wltp = parseWltp(text);
-    const status =
-      price == null && /solgt/i.test(text) ? "sold_no_price" : "active";
+    const status = listingStatus(text, price);
 
     let fuel = "Unknown";
     if (/\bEl\b|Elektrisk/i.test(text)) fuel = "Electric";

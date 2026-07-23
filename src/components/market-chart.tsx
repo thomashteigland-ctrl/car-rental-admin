@@ -20,6 +20,9 @@ type Props = {
   initialStatus: { status: string; message: string };
 };
 
+/** "all" = every model; otherwise the selected variant ids. */
+type ModelSelection = "all" | string[];
+
 function hoverText(p: ChartListing): string {
   const parts = [
     p.title || p.id,
@@ -40,7 +43,11 @@ function hoverText(p: ChartListing): string {
 
 export function MarketChart({ data, initialStatus }: Props) {
   const router = useRouter();
-  const [selectedModel, setSelectedModel] = useState("all");
+  const modelOptions = useMemo(
+    () => data.models.filter((m) => m.id !== "all"),
+    [data.models],
+  );
+  const [modelSelection, setModelSelection] = useState<ModelSelection>("all");
   const [fuel, setFuel] = useState("all");
   const [status, setStatus] = useState("all");
   const [wltp, setWltp] = useState("all");
@@ -49,6 +56,40 @@ export function MarketChart({ data, initialStatus }: Props) {
   const [scrapeStatus, setScrapeStatus] = useState(initialStatus);
   const [pending, startTransition] = useTransition();
 
+  const selectedVariants = useMemo(() => {
+    if (modelSelection === "all") {
+      return new Set(modelOptions.map((m) => m.id));
+    }
+    const known = new Set(modelOptions.map((m) => m.id));
+    return new Set(modelSelection.filter((id) => known.has(id)));
+  }, [modelSelection, modelOptions]);
+
+  const allSelected =
+    modelSelection === "all" ||
+    (modelOptions.length > 0 &&
+      modelOptions.every((m) => selectedVariants.has(m.id)));
+
+  function toggleModel(id: string) {
+    setModelSelection((prev) => {
+      const current =
+        prev === "all" ? modelOptions.map((m) => m.id) : [...prev];
+      const next = current.includes(id)
+        ? current.filter((v) => v !== id)
+        : [...current, id];
+      if (
+        next.length === modelOptions.length &&
+        modelOptions.every((m) => next.includes(m.id))
+      ) {
+        return "all";
+      }
+      return next;
+    });
+  }
+
+  function toggleAll() {
+    setModelSelection(allSelected ? [] : "all");
+  }
+
   const filtered = useMemo(() => {
     const yearOk = (p: ChartListing) => {
       if (p.year == null) return noOlderThan === "all" && noNewerThan === "all";
@@ -56,8 +97,7 @@ export function MarketChart({ data, initialStatus }: Props) {
       if (noNewerThan !== "all" && !(p.year <= Number(noNewerThan))) return false;
       return true;
     };
-    const modelOk = (p: ChartListing) =>
-      selectedModel === "all" || p.variant === selectedModel;
+    const modelOk = (p: ChartListing) => selectedVariants.has(p.variant);
     const wltpOk = (p: ChartListing) => {
       if (wltp === "all" || p.fuelGroup !== "BEV") return true;
       return p.wltpBucket === wltp;
@@ -93,7 +133,7 @@ export function MarketChart({ data, initialStatus }: Props) {
         statusOk(p, "sold"),
     );
     return { active, sold };
-  }, [data, selectedModel, fuel, status, wltp, noOlderThan, noNewerThan]);
+  }, [data, selectedVariants, fuel, status, wltp, noOlderThan, noNewerThan]);
 
   const plotData = useMemo(() => {
     const ice = filtered.active.filter((p) => p.fuelGroup === "ICE" && !p.isNew);
@@ -130,20 +170,26 @@ export function MarketChart({ data, initialStatus }: Props) {
       traces.push(scatter(filtered.sold, "Sold", SOLD, "x"));
     }
 
-    const fitKeys =
-      selectedModel === "all"
-        ? (["all|ICE", "all|BEV"] as const)
-        : ([`${selectedModel}|ICE`, `${selectedModel}|BEV`] as const);
+    const selected = [...selectedVariants];
+    const fitKeys = allSelected
+      ? (["all|ICE", "all|BEV"] as string[])
+      : selected.flatMap((v) => [`${v}|ICE`, `${v}|BEV`]);
+
+    const modelName = (variant: string) =>
+      modelOptions.find((m) => m.id === variant)?.name ?? variant;
 
     for (const key of fitKeys) {
       const curve = data.fitCurves[key];
       if (!curve) continue;
       const group = key.endsWith("ICE") ? "ICE" : "BEV";
       if (fuel !== "all" && fuel !== group) continue;
+      const variant = key.split("|")[0];
+      const labelPrefix =
+        variant === "all" ? group : `${modelName(variant)} ${group}`;
       traces.push({
         type: "scatter",
         mode: "lines",
-        name: `${group} fit (${curve.name})`,
+        name: `${labelPrefix} fit (${curve.name})`,
         x: curve.x,
         y: curve.y,
         line: {
@@ -156,7 +202,7 @@ export function MarketChart({ data, initialStatus }: Props) {
     }
 
     return traces;
-  }, [filtered, data.fitCurves, selectedModel, fuel]);
+  }, [filtered, data.fitCurves, selectedVariants, allSelected, fuel, modelOptions]);
 
   async function runScrape() {
     setScrapeStatus({ status: "running", message: "Starting scrape…" });
@@ -185,21 +231,41 @@ export function MarketChart({ data, initialStatus }: Props) {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-end gap-3">
-        <div className="flex flex-wrap gap-1">
-          {data.models.map((m) => (
+        <div className="flex flex-col gap-1">
+          <span className="text-xs text-stone-500">
+            Models (multi-select)
+          </span>
+          <div className="flex flex-wrap gap-1">
             <button
-              key={m.id}
               type="button"
-              onClick={() => setSelectedModel(m.id)}
+              onClick={toggleAll}
               className={`rounded-md px-2.5 py-1.5 text-sm ${
-                selectedModel === m.id
+                allSelected
                   ? "bg-teal-800 text-white"
                   : "bg-white text-stone-600 ring-1 ring-stone-200 hover:bg-stone-50"
               }`}
             >
-              {m.name}
+              All models
             </button>
-          ))}
+            {modelOptions.map((m) => {
+              const on = selectedVariants.has(m.id);
+              return (
+                <button
+                  key={m.id}
+                  type="button"
+                  onClick={() => toggleModel(m.id)}
+                  aria-pressed={on}
+                  className={`rounded-md px-2.5 py-1.5 text-sm ${
+                    on
+                      ? "bg-teal-800 text-white"
+                      : "bg-white text-stone-600 ring-1 ring-stone-200 hover:bg-stone-50"
+                  }`}
+                >
+                  {m.name}
+                </button>
+              );
+            })}
+          </div>
         </div>
         <button
           type="button"
