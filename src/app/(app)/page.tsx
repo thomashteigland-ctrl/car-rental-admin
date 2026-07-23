@@ -47,7 +47,7 @@ export default async function DashboardPage({
   const prevMonth = monthParam(previousPeriod(monthPeriod).from);
   const nextMonth = monthParam(nextPeriod(monthPeriod).from);
   const rangeLabel =
-    DASHBOARD_RANGES.find((r) => r.key === rangeKey)?.label ?? "Year to date";
+    DASHBOARD_RANGES.find((r) => r.key === rangeKey)?.label ?? "This year";
 
   const [monthSummary, alerts, weekly, fleet] = await Promise.all([
     periodSummary(monthPeriod.from, monthPeriod.to),

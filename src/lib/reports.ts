@@ -5,6 +5,7 @@ import {
   differenceInCalendarDays,
   endOfMonth,
   endOfWeek,
+  endOfYear,
   format,
   getISOWeek,
   parseISO,
@@ -123,12 +124,16 @@ function splitEvenly(total: number, n: number): number[] {
   });
 }
 
-/** Monday-start weeks from year start through period end. */
+/**
+ * Monday-start weeks from year start through year end so confirmed/active
+ * bookings later in the year (upcoming revenue) are included — not cut off
+ * at the current month.
+ */
 export async function weeklyEconomicsSeries(
   periodTo: Date,
 ): Promise<WeeklyPoint[]> {
   const from = startOfYear(periodTo);
-  const to = endOfMonth(periodTo);
+  const to = endOfYear(periodTo);
   const rangeStart = startOfWeek(from, { weekStartsOn: 1 });
   const rangeEnd = endOfWeek(to, { weekStartsOn: 1 });
 

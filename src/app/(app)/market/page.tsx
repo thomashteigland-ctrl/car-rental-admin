@@ -1,3 +1,4 @@
+import { AddMarketModelForm } from "@/components/add-market-model-form";
 import { MarketChart } from "@/components/market-chart";
 import { PageHeader } from "@/components/ui";
 import { loadMarketChartData } from "@/lib/market/chart-data";
@@ -21,6 +22,9 @@ export default async function MarketPage() {
         data={data}
         initialStatus={{ status: scrape.status, message: scrape.message }}
       />
+      <div className="mt-4">
+        <AddMarketModelForm />
+      </div>
     </div>
   );
 }
