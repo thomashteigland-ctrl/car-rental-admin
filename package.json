@@ -1,0 +1,51 @@
+{
+  "name": "rental-admin",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "prisma migrate deploy && next build",
+    "start": "next start",
+    "lint": "eslint",
+    "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
+    "db:seed": "tsx prisma/seed.ts",
+    "db:import-market": "tsx prisma/import-market.ts",
+    "db:reset": "prisma migrate reset --force",
+    "postinstall": "prisma generate",
+    "db:import-fleet": "tsx prisma/import-sqlite-fleet.ts"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.19.3",
+    "bcryptjs": "^3.0.3",
+    "cheerio": "^1.2.0",
+    "csv-parse": "^7.0.1",
+    "date-fns": "^4.4.0",
+    "dotenv": "^17.4.2",
+    "jose": "^6.2.3",
+    "next": "16.2.10",
+    "plotly.js": "^3.7.0",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "react-plotly.js": "^4.0.0",
+    "recharts": "^3.9.2",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/node": "^20",
+    "@types/plotly.js": "^3.0.10",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.2.10",
+    "prisma": "^6.19.3",
+    "tailwindcss": "^4",
+    "tsx": "^4.21.0",
+    "typescript": "^5"
+  }
+}
