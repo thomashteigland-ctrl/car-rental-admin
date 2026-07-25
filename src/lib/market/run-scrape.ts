@@ -1,5 +1,6 @@
 import type { MarketListing, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { invalidateMarketFitCache } from "./depreciation";
 import { mapPool, scrapeModel } from "./scrape";
 import {
   MODEL_CONCURRENCY,
@@ -307,6 +308,7 @@ export async function runMarketScrape(): Promise<{
     const message =
       `Done — ${newCount} new, ${updatedCount} updated` +
       (soldCount ? `, ${soldCount} sold` : "");
+    invalidateMarketFitCache();
     await setJob("done", message);
     return { newCount, updatedCount, message };
   } catch (e) {

@@ -73,5 +73,4 @@ export async function deleteServiceAction(formData: FormData) {
   revalidatePath("/service");
   revalidatePath("/");
   revalidatePath("/reports");
-  redirect("/service");
 }

@@ -26,7 +26,10 @@ import {
   loadMarketFitCache,
   type MarketDepInput,
 } from "./market/depreciation";
+import type { FitResult } from "./market/fit";
 import { prisma } from "./prisma";
+
+type FitCache = Record<string, FitResult>;
 
 const carWithMarket = {
   include: { marketModel: { select: { variant: true } } },
@@ -131,13 +134,14 @@ function splitEvenly(total: number, n: number): number[] {
  */
 export async function weeklyEconomicsSeries(
   periodTo: Date,
+  fits?: FitCache,
 ): Promise<WeeklyPoint[]> {
   const from = startOfYear(periodTo);
   const to = endOfYear(periodTo);
   const rangeStart = startOfWeek(from, { weekStartsOn: 1 });
   const rangeEnd = endOfWeek(to, { weekStartsOn: 1 });
 
-  const [bookings, serviceEvents] = await Promise.all([
+  const [bookings, serviceEvents, fitMap] = await Promise.all([
     prisma.booking.findMany({
       where: {
         status: { notIn: ["cancelled", "no_show", "draft"] },
@@ -153,17 +157,8 @@ export async function weeklyEconomicsSeries(
     prisma.serviceEvent.findMany({
       where: { occurredOn: { gte: rangeStart, lte: rangeEnd } },
     }),
+    fits ? Promise.resolve(fits) : loadMarketFitCache(),
   ]);
-
-  const fits = await loadMarketFitCache(
-    [
-      ...new Set(
-        bookings
-          .map((b) => b.car.marketModel?.variant)
-          .filter((v): v is string => Boolean(v)),
-      ),
-    ],
-  );
 
   type Bucket = {
     weekKey: string;
@@ -244,7 +239,7 @@ export async function weeklyEconomicsSeries(
 
   for (const b of bookings) {
     const linked = b.serviceEvents.reduce((s, e) => s + e.amountOre, 0);
-    const rates = effectiveDepRates(asMarketCar(b.car), fits);
+    const rates = effectiveDepRates(asMarketCar(b.car), fitMap);
     const econ = bookingEconomics(b, rates, linked);
     allocateAcrossDays(b.plannedStartAt, b.plannedEndAt, b.status, {
       revenueOre: econ.revenueExVatOre,
@@ -351,20 +346,18 @@ export async function loadPeriodBookings(from: Date, to: Date) {
   });
 }
 
-export async function periodSummary(from: Date, to: Date) {
-  const bookings = await loadPeriodBookings(from, to);
-  const serviceEvents = await prisma.serviceEvent.findMany({
-    where: { occurredOn: { gte: from, lte: to } },
-  });
-  const fits = await loadMarketFitCache(
-    [
-      ...new Set(
-        bookings
-          .map((b) => b.car.marketModel?.variant)
-          .filter((v): v is string => Boolean(v)),
-      ),
-    ],
-  );
+export async function periodSummary(
+  from: Date,
+  to: Date,
+  fits?: FitCache,
+) {
+  const [bookings, serviceEvents, fitMap] = await Promise.all([
+    loadPeriodBookings(from, to),
+    prisma.serviceEvent.findMany({
+      where: { occurredOn: { gte: from, lte: to } },
+    }),
+    fits ? Promise.resolve(fits) : loadMarketFitCache(),
+  ]);
 
   let revenueExVatOre = 0;
   let costExVatOre = 0;
@@ -388,7 +381,7 @@ export async function periodSummary(from: Date, to: Date) {
 
   for (const b of bookings) {
     const linked = b.serviceEvents.reduce((s, e) => s + e.amountOre, 0);
-    const rates = effectiveDepRates(asMarketCar(b.car), fits);
+    const rates = effectiveDepRates(asMarketCar(b.car), fitMap);
     const econ = bookingEconomics(b, rates, linked);
     revenueExVatOre += econ.revenueExVatOre;
     costExVatOre += econ.costExVatOre;
@@ -423,9 +416,10 @@ export async function periodSummary(from: Date, to: Date) {
     .reduce((s, e) => s + e.amountOre, 0);
   const totalServiceOre = serviceEvents.reduce((s, e) => s + e.amountOre, 0);
 
-  const totalKm = [...perCar.values()].reduce((s, r) => s + r.km, 0) || 1;
+  const rentedKm = [...perCar.values()].reduce((s, r) => s + r.km, 0);
+  const allocKm = rentedKm || 1;
   for (const row of perCar.values()) {
-    const share = (row.km / totalKm) * unlinkedServiceOre;
+    const share = (row.km / allocKm) * unlinkedServiceOre;
     row.linkedServiceOre += Math.round(share);
   }
 
@@ -478,6 +472,7 @@ export async function periodSummary(from: Date, to: Date) {
     fixedCostOre,
     economicProfitOre,
     actualProfitOre,
+    rentedKm,
     utilization,
     activeCars: cars.length,
     perCar: [...perCar.values()].sort(
@@ -485,6 +480,36 @@ export async function periodSummary(from: Date, to: Date) {
     ),
     bookings,
   };
+}
+
+/**
+ * Annualize a total over an inclusive calendar-day span:
+ * amount × 365 / (to − from + 1).
+ */
+export function annualizedRunRate(
+  amount: number,
+  from: Date,
+  to: Date,
+): number {
+  const days = Math.max(
+    1,
+    differenceInCalendarDays(startOfDay(to), startOfDay(from)) + 1,
+  );
+  return Math.round((amount * 365) / days);
+}
+
+/** Min/max rental start among bookings — basis for run-rate day span. */
+export function rentalStartSpan(
+  bookings: { plannedStartAt: Date }[],
+): { from: Date; to: Date } | null {
+  if (bookings.length === 0) return null;
+  let from = bookings[0]!.plannedStartAt;
+  let to = from;
+  for (const b of bookings) {
+    if (b.plannedStartAt < from) from = b.plannedStartAt;
+    if (b.plannedStartAt > to) to = b.plannedStartAt;
+  }
+  return { from, to };
 }
 
 export async function getAlerts() {
@@ -565,30 +590,27 @@ export async function getAlerts() {
  * Any extra odometer/ownership beyond those bookings is depreciated the same way,
  * so stale/low currentOdometer cannot zero out booking dep.
  */
-export async function fleetExpectedValue(asOf: Date = new Date()) {
-  const cars = await prisma.car.findMany({
-    where: { status: { not: "retired" } },
-    include: {
-      marketModel: { select: { variant: true } },
-      bookings: {
-        where: { status: "completed" },
-        select: {
-          plannedStartAt: true,
-          plannedEndAt: true,
-          drivenKm: true,
+export async function fleetExpectedValue(
+  asOf: Date = new Date(),
+  fits?: FitCache,
+) {
+  const [cars, fitMap] = await Promise.all([
+    prisma.car.findMany({
+      where: { status: { not: "retired" } },
+      include: {
+        marketModel: { select: { variant: true } },
+        bookings: {
+          where: { status: "completed" },
+          select: {
+            plannedStartAt: true,
+            plannedEndAt: true,
+            drivenKm: true,
+          },
         },
       },
-    },
-  });
-  const fits = await loadMarketFitCache(
-    [
-      ...new Set(
-        cars
-          .map((c) => c.marketModel?.variant)
-          .filter((v): v is string => Boolean(v)),
-      ),
-    ],
-  );
+    }),
+    fits ? Promise.resolve(fits) : loadMarketFitCache(),
+  ]);
   const today = startOfDay(asOf);
 
   let purchaseTotalOre = 0;
@@ -605,7 +627,7 @@ export async function fleetExpectedValue(asOf: Date = new Date()) {
     valuedCars += 1;
     purchaseTotalOre += car.purchasePriceOre;
 
-    const rates = effectiveDepRates(asMarketCar(car), fits);
+    const rates = effectiveDepRates(asMarketCar(car), fitMap);
     let bookingDepOre = 0;
     let bookingKm = 0;
     let bookingDays = 0;

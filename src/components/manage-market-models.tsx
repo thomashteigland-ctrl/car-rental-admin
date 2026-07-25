@@ -1,13 +1,14 @@
 "use client";
 
 import { useActionState, useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   renameMarketModelAction,
   setMarketModelHiddenAction,
   type RenameMarketModelState,
 } from "@/app/actions/market";
 import { Button, inputClass } from "@/components/ui";
+import { queryKeys } from "@/lib/query-keys";
 
 export type ManageMarketModelRow = {
   id: string;
@@ -16,16 +17,24 @@ export type ManageMarketModelRow = {
   hidden: boolean;
 };
 
+async function invalidateMarket(queryClient: ReturnType<typeof useQueryClient>) {
+  await Promise.all([
+    queryClient.invalidateQueries({ queryKey: queryKeys.market }),
+    queryClient.invalidateQueries({ queryKey: ["cars"] }),
+    queryClient.invalidateQueries({ queryKey: ["dashboard"] }),
+  ]);
+}
+
 function RenameRow({ model }: { model: ManageMarketModelRow }) {
-  const router = useRouter();
+  const queryClient = useQueryClient();
   const [state, formAction, pending] = useActionState<
     RenameMarketModelState,
     FormData
   >(renameMarketModelAction, null);
 
   useEffect(() => {
-    if (state?.ok) router.refresh();
-  }, [state, router]);
+    if (state?.ok) void invalidateMarket(queryClient);
+  }, [state, queryClient]);
 
   return (
     <form action={formAction} className="flex flex-wrap items-center gap-2">
@@ -55,7 +64,7 @@ export function ManageMarketModels({
 }: {
   models: ManageMarketModelRow[];
 }) {
-  const router = useRouter();
+  const queryClient = useQueryClient();
   const visible = models.filter((m) => !m.hidden);
   const hidden = models.filter((m) => m.hidden);
 
@@ -81,7 +90,7 @@ export function ManageMarketModels({
               <form
                 action={async (fd) => {
                   await setMarketModelHiddenAction(fd);
-                  router.refresh();
+                  await invalidateMarket(queryClient);
                 }}
               >
                 <input type="hidden" name="id" value={m.id} />
@@ -119,7 +128,7 @@ export function ManageMarketModels({
                 <form
                   action={async (fd) => {
                     await setMarketModelHiddenAction(fd);
-                    router.refresh();
+                    await invalidateMarket(queryClient);
                   }}
                 >
                   <input type="hidden" name="id" value={m.id} />

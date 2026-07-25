@@ -2,11 +2,12 @@
 
 import dynamic from "next/dynamic";
 import { useMemo, useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
 import type { Data } from "plotly.js";
 import type { MarketChartPayload } from "@/lib/market/chart-data";
 import { LISTING_URL, WLTP_BUCKETS } from "@/lib/market/types";
 import type { ChartListing } from "@/lib/market/types";
+import { queryKeys } from "@/lib/query-keys";
 
 const Plot = dynamic(() => import("react-plotly.js"), { ssr: false });
 
@@ -42,7 +43,7 @@ function hoverText(p: ChartListing): string {
 }
 
 export function MarketChart({ data, initialStatus }: Props) {
-  const router = useRouter();
+  const queryClient = useQueryClient();
   const modelOptions = useMemo(
     () => data.models.filter((m) => m.id !== "all"),
     [data.models],
@@ -217,7 +218,11 @@ export function MarketChart({ data, initialStatus }: Props) {
         return;
       }
       setScrapeStatus({ status: "done", message: body.message || "Done" });
-      startTransition(() => router.refresh());
+      startTransition(() => {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.market });
+        void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
+        void queryClient.invalidateQueries({ queryKey: ["cars"] });
+      });
     } catch (e) {
       setScrapeStatus({
         status: "error",

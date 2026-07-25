@@ -76,39 +76,74 @@ export async function fitVariantFuel(
   );
 }
 
-/** Fit cache keyed by `${variant}|${ICE|BEV}`. */
+type FitCacheEntry = { at: number; fits: Record<string, FitResult> };
+
+const FIT_CACHE_TTL_MS = 60_000;
+const globalFitCache = globalThis as unknown as {
+  __marketFitCache?: FitCacheEntry;
+  __marketFitInflight?: Promise<Record<string, FitResult>>;
+};
+
+/** Drop cached curve fits (call after a market scrape). */
+export function invalidateMarketFitCache(): void {
+  globalFitCache.__marketFitCache = undefined;
+  globalFitCache.__marketFitInflight = undefined;
+}
+
+/**
+ * Fit cache keyed by `${variant}|${ICE|BEV}`.
+ * Results are memoized for 60s (and de-duped while a load is in flight) so
+ * dashboard / reports / fleet pages don't each re-query + refit every request.
+ * `variants` is kept for call-site compatibility; the full active set is cached.
+ */
 export async function loadMarketFitCache(
-  variants?: string[],
+  _variants?: string[],
 ): Promise<Record<string, FitResult>> {
-  const listings = await prisma.marketListing.findMany({
-    where: {
-      status: "active",
-      km: { not: null },
-      priceNok: { not: null },
-      ...(variants?.length ? { variant: { in: variants } } : {}),
-    },
-    select: { km: true, priceNok: true, fuel: true, variant: true },
-  });
+  const cached = globalFitCache.__marketFitCache;
+  if (cached && Date.now() - cached.at < FIT_CACHE_TTL_MS) {
+    return cached.fits;
+  }
+  if (globalFitCache.__marketFitInflight) {
+    return globalFitCache.__marketFitInflight;
+  }
 
-  const byKey = new Map<string, { km: number[]; price: number[] }>();
-  for (const row of listings) {
-    const group = fuelGroupFor(row.fuel || "Diesel");
-    const key = `${row.variant}|${group}`;
-    let bucket = byKey.get(key);
-    if (!bucket) {
-      bucket = { km: [], price: [] };
-      byKey.set(key, bucket);
+  globalFitCache.__marketFitInflight = (async () => {
+    const listings = await prisma.marketListing.findMany({
+      where: {
+        status: "active",
+        km: { not: null },
+        priceNok: { not: null },
+      },
+      select: { km: true, priceNok: true, fuel: true, variant: true },
+    });
+
+    const byKey = new Map<string, { km: number[]; price: number[] }>();
+    for (const row of listings) {
+      const group = fuelGroupFor(row.fuel || "Diesel");
+      const key = `${row.variant}|${group}`;
+      let bucket = byKey.get(key);
+      if (!bucket) {
+        bucket = { km: [], price: [] };
+        byKey.set(key, bucket);
+      }
+      bucket.km.push(row.km!);
+      bucket.price.push(row.priceNok!);
     }
-    bucket.km.push(row.km!);
-    bucket.price.push(row.priceNok!);
-  }
 
-  const fits: Record<string, FitResult> = {};
-  for (const [key, { km, price }] of byKey) {
-    const fit = fitModels(km, price);
-    if (fit) fits[key] = fit;
+    const fits: Record<string, FitResult> = {};
+    for (const [key, { km, price }] of byKey) {
+      const fit = fitModels(km, price);
+      if (fit) fits[key] = fit;
+    }
+    globalFitCache.__marketFitCache = { at: Date.now(), fits };
+    return fits;
+  })();
+
+  try {
+    return await globalFitCache.__marketFitInflight;
+  } finally {
+    globalFitCache.__marketFitInflight = undefined;
   }
-  return fits;
 }
 
 export function marketDepFromFit(

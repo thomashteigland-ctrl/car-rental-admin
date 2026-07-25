@@ -1,15 +1,16 @@
 "use client";
 
 import { useActionState, useEffect, useRef } from "react";
-import { useRouter } from "next/navigation";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   addMarketModelAction,
   type AddMarketModelState,
 } from "@/app/actions/market";
 import { Button, Field, inputClass } from "@/components/ui";
+import { queryKeys } from "@/lib/query-keys";
 
 export function AddMarketModelForm() {
-  const router = useRouter();
+  const queryClient = useQueryClient();
   const formRef = useRef<HTMLFormElement>(null);
   const [state, formAction, pending] = useActionState<
     AddMarketModelState,
@@ -19,9 +20,11 @@ export function AddMarketModelForm() {
   useEffect(() => {
     if (state?.ok) {
       formRef.current?.reset();
-      router.refresh();
+      void queryClient.invalidateQueries({ queryKey: queryKeys.market });
+      void queryClient.invalidateQueries({ queryKey: ["cars"] });
+      void queryClient.invalidateQueries({ queryKey: ["dashboard"] });
     }
-  }, [state, router]);
+  }, [state, queryClient]);
 
   return (
     <form
