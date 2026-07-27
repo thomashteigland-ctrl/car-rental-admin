@@ -406,7 +406,10 @@ export async function periodSummary(
     row.expectedDepOre += econ.expectedDepOre;
     row.linkedServiceOre += linked;
     row.bookingCount += 1;
-    row.km += econ.distanceDriven ?? 0;
+    // Driven km is only reliable once the rental is completed.
+    if (b.status === "completed") {
+      row.km += econ.distanceDriven ?? 0;
+    }
     row.days += econ.rentalDays;
     perCar.set(key, row);
   }

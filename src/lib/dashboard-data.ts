@@ -1,4 +1,5 @@
 import { format } from "date-fns";
+import { distanceDriven, sumLineItems } from "@/lib/booking-calc";
 import {
   DASHBOARD_RANGES,
   filterWeeklyByRange,
@@ -111,9 +112,18 @@ export async function loadDashboardData(opts: {
   const runRateKm = span
     ? annualizedRunRate(rangeSummary.rentedKm, span.from, span.to)
     : 0;
+
+  // Avg revenue/km only from completed rentals (driven km is reliable there).
+  let completedRevenueOre = 0;
+  let completedKm = 0;
+  for (const b of rangeSummary.bookings) {
+    if (b.status !== "completed") continue;
+    completedRevenueOre += sumLineItems(b.lineItems, "revenue").exVatOre;
+    completedKm += distanceDriven(b) ?? 0;
+  }
   const avgRevenuePerKmOre =
-    rangeSummary.rentedKm > 0
-      ? Math.round(rangeSummary.revenueExVatOre / rangeSummary.rentedKm)
+    completedKm > 0
+      ? Math.round(completedRevenueOre / completedKm)
       : null;
 
   return {

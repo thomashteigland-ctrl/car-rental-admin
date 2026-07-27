@@ -144,7 +144,7 @@ function DashboardView({
           <StatCard
             label="Kilometers rented this period"
             value={formatKm(rangeSummary.rentedKm)}
-            hint="Driven km on bookings in window"
+            hint="Driven km on completed bookings in window"
           />
         </div>
         <div className="grid gap-3">
@@ -157,8 +157,8 @@ function DashboardView({
             }
             hint={
               avgRevenuePerKmOre != null
-                ? "Revenue ÷ kilometers rented"
-                : "No rented kilometers yet"
+                ? "Completed rentals only · revenue ÷ km"
+                : "No completed rentals with km yet"
             }
           />
           <StatCard
