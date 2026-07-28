@@ -3,47 +3,16 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireSession } from "@/lib/auth";
-import { bookingsOverlap } from "@/lib/booking-calc";
-import { formatDate, fromDateInput, fromDatetimeLocal } from "@/lib/dates";
+import { fromDateInput, fromDatetimeLocal } from "@/lib/dates";
 import { krToOre } from "@/lib/money";
 import { prisma } from "@/lib/prisma";
 
 export type BookingFormState = { error: string } | null;
 
-/** Statuses that still occupy the car for availability. */
-const BLOCKING_STATUSES = ["draft", "confirmed", "active"];
-
 function num(v: FormDataEntryValue | null): number | null {
   if (v == null || v === "") return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
-}
-
-async function findOverlap(
-  carId: string,
-  start: Date,
-  end: Date,
-  excludeId?: string,
-) {
-  const existing = await prisma.booking.findMany({
-    where: {
-      carId,
-      status: { in: BLOCKING_STATUSES },
-      ...(excludeId ? { id: { not: excludeId } } : {}),
-    },
-    select: {
-      id: true,
-      customerName: true,
-      plannedStartAt: true,
-      plannedEndAt: true,
-    },
-  });
-  for (const b of existing) {
-    if (bookingsOverlap(start, end, b.plannedStartAt, b.plannedEndAt)) {
-      return b;
-    }
-  }
-  return null;
 }
 
 export async function createQuickBookingAction(
@@ -74,13 +43,6 @@ export async function createQuickBookingAction(
   }
   if (vatPercent < 0) {
     return { error: "VAT % cannot be negative" };
-  }
-
-  const clash = await findOverlap(carId, plannedStartAt, plannedEndAt);
-  if (clash) {
-    return {
-      error: `Overlaps booking for ${clash.customerName} (${formatDate(clash.plannedStartAt)} → ${formatDate(clash.plannedEndAt)}). Change dates or edit that booking.`,
-    };
   }
 
   const booking = await prisma.booking.create({
@@ -139,18 +101,6 @@ export async function updateBookingScheduleAction(
     return { error: "End date must be on or after start date" };
   }
 
-  const clash = await findOverlap(
-    existing.carId,
-    plannedStartAt,
-    plannedEndAt,
-    id,
-  );
-  if (clash) {
-    return {
-      error: `Overlaps booking for ${clash.customerName} (${formatDate(clash.plannedStartAt)} → ${formatDate(clash.plannedEndAt)}).`,
-    };
-  }
-
   await prisma.booking.update({
     where: { id },
     data: { customerName, plannedStartAt, plannedEndAt },
@@ -188,13 +138,6 @@ export async function upsertBookingAction(
   const customerName = String(formData.get("customerName") ?? "").trim();
   if (!carId || !customerName) {
     return { error: "Car and customer name are required" };
-  }
-
-  const clash = await findOverlap(carId, plannedStartAt, plannedEndAt, id);
-  if (clash) {
-    return {
-      error: `Overlaps booking for ${clash.customerName} (${formatDate(clash.plannedStartAt)} → ${formatDate(clash.plannedEndAt)}). Change dates or edit that booking.`,
-    };
   }
 
   const drivenKm = num(formData.get("drivenKm"));

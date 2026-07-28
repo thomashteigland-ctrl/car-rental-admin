@@ -1,7 +1,6 @@
 import {
   differenceInCalendarDays,
   differenceInHours,
-  startOfDay,
 } from "date-fns";
 
 export type LineItemLike = {
@@ -87,18 +86,4 @@ export function bookingEconomics(
     rentalDays: rentalDays(booking),
     distanceDriven: distanceDriven(booking),
   };
-}
-
-/** Inclusive calendar-day overlap (date-only bookings; times ignored). */
-export function bookingsOverlap(
-  aStart: Date,
-  aEnd: Date,
-  bStart: Date,
-  bEnd: Date,
-): boolean {
-  const aS = startOfDay(aStart).getTime();
-  const aE = startOfDay(aEnd).getTime();
-  const bS = startOfDay(bStart).getTime();
-  const bE = startOfDay(bEnd).getTime();
-  return aS <= bE && bS <= aE;
 }
