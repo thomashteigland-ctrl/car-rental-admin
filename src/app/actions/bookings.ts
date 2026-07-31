@@ -197,7 +197,7 @@ export async function upsertBookingAction(
   revalidatePath(`/bookings/${booking.id}`);
   revalidatePath("/calendar");
   revalidatePath("/");
-  redirect(`/bookings/${booking.id}`);
+  return null;
 }
 
 export async function addLineItemAction(formData: FormData) {

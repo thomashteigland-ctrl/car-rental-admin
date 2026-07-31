@@ -4,11 +4,10 @@ import { useMemo, useState } from "react";
 import { parseISO, startOfDay, startOfWeek } from "date-fns";
 import {
   Bar,
-  BarChart,
   CartesianGrid,
+  ComposedChart,
   Legend,
   Line,
-  LineChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -25,10 +24,20 @@ type Mode = "stacked" | "cumulative";
 
 const COLORS = {
   completed: "#0f766e",
-  upcoming: "#38bdf8",
+  /** Same teal as completed, more transparent for upcoming / forecast */
+  upcoming: "rgba(15, 118, 110, 0.38)",
   costs: "#be123c",
   dep: "#d97706",
+  revPerKm: "#0e7490",
+  km: "#334155",
 };
+
+/** Keep plot areas aligned across the stacked charts. */
+const AXIS = {
+  leftWidth: 52,
+  rightWidth: 64,
+  margin: { top: 4, right: 4, left: 0, bottom: 4 },
+} as const;
 
 /** Carve costs/dep out of revenue; keep completed/upcoming proportion. */
 function carveRevenue(
@@ -75,7 +84,14 @@ type ChartRow = WeeklyPoint & {
   actualKr: number | null;
   /** Cumulative forecast (includes upcoming) — null before pivot */
   forecastKr: number | null;
+  /** Revenue/km in kr — null when no km */
+  revPerKmKr: number | null;
+  kmValue: number;
 };
+
+function formatKm(km: number) {
+  return `${Math.round(km).toLocaleString("nb-NO")} km`;
+}
 
 function ChartTooltip({
   active,
@@ -99,6 +115,9 @@ function ChartTooltip({
   const revenue = completed + upcoming;
   const costs = mode === "cumulative" ? p.cumCostsOre : p.costsOre;
   const dep = mode === "cumulative" ? p.cumDepOre : p.depOre;
+  const km = mode === "cumulative" ? p.cumKm : p.km;
+  const revPerKmOre =
+    mode === "cumulative" ? p.cumRevenuePerKmOre : p.revenuePerKmOre;
 
   return (
     <div className="rounded-lg border border-stone-200 bg-white px-3 py-2.5 text-xs shadow-lg">
@@ -118,7 +137,7 @@ function ChartTooltip({
           <dd className="font-medium tabular-nums">{formatNOK(completed)}</dd>
         </div>
         <div className="flex justify-between gap-6">
-          <dt className="text-sky-600">Upcoming / forecast</dt>
+          <dt className="text-teal-700/70">Upcoming / forecast</dt>
           <dd className="font-medium tabular-nums">{formatNOK(upcoming)}</dd>
         </div>
         <div className="flex justify-between gap-6 border-t border-stone-100 pt-1">
@@ -137,6 +156,18 @@ function ChartTooltip({
             <dd className="font-medium tabular-nums">{formatNOK(dep)}</dd>
           </div>
         ) : null}
+        <div className="flex justify-between gap-6 border-t border-stone-100 pt-1">
+          <dt className="text-slate-700">Driven km</dt>
+          <dd className="font-medium tabular-nums">{formatKm(km)}</dd>
+        </div>
+        <div className="flex justify-between gap-6">
+          <dt className="text-cyan-800">Revenue / km</dt>
+          <dd className="font-medium tabular-nums">
+            {revPerKmOre != null
+              ? formatNOK(revPerKmOre, { decimals: 2 })
+              : "—"}
+          </dd>
+        </div>
       </dl>
       <div className="mt-2 border-t border-stone-100 pt-2">
         <div className="font-semibold text-stone-800">{p.monthLabel}</div>
@@ -158,8 +189,88 @@ function ChartTooltip({
             <dt>Revenue</dt>
             <dd className="tabular-nums">{formatNOK(p.monthRevenueOre)}</dd>
           </div>
+          <div className="flex justify-between gap-6">
+            <dt>Km</dt>
+            <dd className="tabular-nums">{formatKm(p.monthKm)}</dd>
+          </div>
         </dl>
       </div>
+    </div>
+  );
+}
+
+function KmTooltip({
+  active,
+  payload,
+  mode,
+}: {
+  active?: boolean;
+  payload?: Array<{ payload: ChartRow }>;
+  mode: Mode;
+}) {
+  if (!active || !payload?.length) return null;
+  const p = payload[0].payload;
+  const km = mode === "cumulative" ? p.cumKm : p.km;
+  return (
+    <div className="rounded-lg border border-stone-200 bg-white px-3 py-2.5 text-xs shadow-lg">
+      <div className="font-semibold text-stone-900">
+        Week {p.weekNumber} · {p.weekLabel}
+      </div>
+      <div className="mt-0.5 text-stone-500">
+        {mode === "cumulative" ? "Cumulative" : "This week"}
+      </div>
+      <dl className="mt-2 space-y-1">
+        <div className="flex justify-between gap-6">
+          <dt className="text-slate-700">Driven km</dt>
+          <dd className="font-medium tabular-nums">{formatKm(km)}</dd>
+        </div>
+        <div className="flex justify-between gap-6">
+          <dt className="text-stone-500">Month total</dt>
+          <dd className="tabular-nums">{formatKm(p.monthKm)}</dd>
+        </div>
+      </dl>
+    </div>
+  );
+}
+
+function RevPerKmTooltip({
+  active,
+  payload,
+  mode,
+}: {
+  active?: boolean;
+  payload?: Array<{ payload: ChartRow }>;
+  mode: Mode;
+}) {
+  if (!active || !payload?.length) return null;
+  const p = payload[0].payload;
+  const km = mode === "cumulative" ? p.cumKm : p.km;
+  const revPerKmOre =
+    mode === "cumulative" ? p.cumRevenuePerKmOre : p.revenuePerKmOre;
+  return (
+    <div className="rounded-lg border border-stone-200 bg-white px-3 py-2.5 text-xs shadow-lg">
+      <div className="font-semibold text-stone-900">
+        Week {p.weekNumber} · {p.weekLabel}
+      </div>
+      <div className="mt-0.5 text-stone-500">
+        {mode === "cumulative"
+          ? "Cumulative avg · completed bookings"
+          : "This week · completed bookings"}
+      </div>
+      <dl className="mt-2 space-y-1">
+        <div className="flex justify-between gap-6">
+          <dt className="text-cyan-800">Revenue / km</dt>
+          <dd className="font-medium tabular-nums">
+            {revPerKmOre != null
+              ? formatNOK(revPerKmOre, { decimals: 2 })
+              : "—"}
+          </dd>
+        </div>
+        <div className="flex justify-between gap-6">
+          <dt className="text-stone-500">Driven km</dt>
+          <dd className="tabular-nums">{formatKm(km)}</dd>
+        </div>
+      </dl>
     </div>
   );
 }
@@ -200,12 +311,16 @@ function withWindowCumulative(data: WeeklyPoint[]): WeeklyPoint[] {
   let cumUpcoming = 0;
   let cumCosts = 0;
   let cumDep = 0;
+  let cumKm = 0;
+  let cumCompletedBookingRevenue = 0;
   return data.map((d) => {
     cumRevenue += d.revenueOre;
     cumCompleted += d.revenueCompletedOre;
     cumUpcoming += d.revenueUpcomingOre;
     cumCosts += d.costsOre;
     cumDep += d.depOre;
+    cumKm += d.km;
+    cumCompletedBookingRevenue += d.completedBookingRevenueOre;
     return {
       ...d,
       cumRevenueOre: cumRevenue,
@@ -213,8 +328,57 @@ function withWindowCumulative(data: WeeklyPoint[]): WeeklyPoint[] {
       cumRevenueUpcomingOre: cumUpcoming,
       cumCostsOre: cumCosts,
       cumDepOre: cumDep,
+      cumKm,
+      cumRevenuePerKmOre:
+        cumKm > 0
+          ? Math.round(cumCompletedBookingRevenue / cumKm)
+          : null,
     };
   });
+}
+
+function compactNumber(v: number) {
+  return new Intl.NumberFormat("nb-NO", {
+    notation: "compact",
+    compactDisplay: "short",
+  }).format(v);
+}
+
+/** Invisible right axis — reserves the same width as the top chart. */
+function SpacerRightAxis() {
+  return (
+    <YAxis
+      yAxisId="spacer"
+      orientation="right"
+      width={AXIS.rightWidth}
+      tick={false}
+      axisLine={false}
+      tickLine={false}
+    />
+  );
+}
+
+function WeekXAxis() {
+  return (
+    <XAxis
+      dataKey="weekNumber"
+      tick={{ fontSize: 9, fill: "#78716c" }}
+      interval={0}
+      tickFormatter={(v: number) => `${v}`}
+      height={28}
+    />
+  );
+}
+
+function ChartGrid() {
+  return (
+    <CartesianGrid
+      strokeDasharray="3 3"
+      stroke="#e7e5e4"
+      vertical
+      horizontal
+    />
+  );
 }
 
 export function DashboardWeeklyChart({
@@ -243,6 +407,10 @@ export function DashboardWeeklyChart({
     const lastActualIdx = pivotIdx - 1;
 
     return windowed.map((d, i): ChartRow => {
+      const revPerKmOre =
+        mode === "cumulative" ? d.cumRevenuePerKmOre : d.revenuePerKmOre;
+      const kmValue = mode === "cumulative" ? d.cumKm : d.km;
+
       if (mode === "stacked") {
         const carved = carveRevenue(
           d.revenueCompletedOre,
@@ -260,6 +428,8 @@ export function DashboardWeeklyChart({
           depKr: oreToKr(carved.depOre),
           actualKr: null,
           forecastKr: null,
+          revPerKmKr: revPerKmOre != null ? oreToKr(revPerKmOre) : null,
+          kmValue,
         };
       }
 
@@ -291,6 +461,8 @@ export function DashboardWeeklyChart({
         depKr,
         actualKr,
         forecastKr,
+        revPerKmKr: revPerKmOre != null ? oreToKr(revPerKmOre) : null,
+        kmValue,
       };
     });
   }, [data, mode, range, showCosts, showDep]);
@@ -303,21 +475,23 @@ export function DashboardWeeklyChart({
       depKr: "Depreciation",
       actualKr: "Completed",
       forecastKr: "Forecast",
+      revPerKmKr: "Revenue / km",
+      kmValue: "Km",
     };
     return map[value] ?? value;
   };
 
   return (
     <div className="rounded-xl border border-stone-200 bg-white p-4 shadow-sm">
-      <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+      <div className="mb-3 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div>
           <h2 className="text-sm font-semibold text-stone-900">
             Weekly earnings
           </h2>
           <p className="mt-0.5 text-xs text-stone-500">
             {mode === "cumulative"
-              ? "Teal = actual completed · blue continues as forecast"
-              : "Completed vs upcoming · toggle costs / dep to recolor revenue"}
+              ? "Solid teal = completed · lighter teal continues as forecast · panels share week columns"
+              : "Completed vs upcoming (lighter teal) · panels share week columns · toggle costs / dep"}
           </p>
         </div>
         <div className="flex flex-col items-stretch gap-2 sm:items-end">
@@ -362,167 +536,225 @@ export function DashboardWeeklyChart({
         </div>
       </div>
 
-      <div className="h-72 w-full">
+      {/* Earnings */}
+      <div className="h-64 w-full">
         <ResponsiveContainer width="100%" height="100%">
-          {mode === "stacked" ? (
-            <BarChart
-              data={chartData}
-              margin={{ top: 8, right: 8, left: 0, bottom: 0 }}
-            >
-              <CartesianGrid
-                strokeDasharray="3 3"
-                stroke="#e7e5e4"
-                vertical={false}
-              />
-              <XAxis
-                dataKey="weekNumber"
-                tick={{ fontSize: 9, fill: "#78716c" }}
-                interval={0}
-                tickFormatter={(v: number) => `${v}`}
-              />
-              <YAxis
-                tick={{ fontSize: 10, fill: "#78716c" }}
-                tickFormatter={(v: number) =>
-                  new Intl.NumberFormat("nb-NO", {
-                    notation: "compact",
-                    compactDisplay: "short",
-                  }).format(v)
-                }
-                width={48}
-              />
-              <Tooltip
-                content={
-                  <ChartTooltip
-                    mode={mode}
-                    showCosts={showCosts}
-                    showDep={showDep}
-                  />
-                }
-                cursor={{ fill: "rgba(15, 118, 110, 0.06)" }}
-              />
-              <Legend
-                wrapperStyle={{ fontSize: 12 }}
-                formatter={legendFormatter}
-              />
-              <Bar
-                dataKey="completedKr"
-                name="completedKr"
-                stackId="a"
-                fill={COLORS.completed}
-              />
-              <Bar
-                dataKey="upcomingKr"
-                name="upcomingKr"
-                stackId="a"
-                fill={COLORS.upcoming}
-                radius={showCosts || showDep ? [0, 0, 0, 0] : [3, 3, 0, 0]}
-              />
-              {showCosts ? (
-                <Bar
-                  dataKey="costsKr"
-                  name="costsKr"
-                  stackId="a"
-                  fill={COLORS.costs}
-                  radius={showDep ? [0, 0, 0, 0] : [3, 3, 0, 0]}
+          <ComposedChart data={chartData} margin={AXIS.margin}>
+            <ChartGrid />
+            <WeekXAxis />
+            <YAxis
+              yAxisId="left"
+              tick={{ fontSize: 10, fill: "#78716c" }}
+              tickFormatter={compactNumber}
+              width={AXIS.leftWidth}
+            />
+            <SpacerRightAxis />
+            <Tooltip
+              content={
+                <ChartTooltip
+                  mode={mode}
+                  showCosts={showCosts}
+                  showDep={showDep}
                 />
-              ) : null}
-              {showDep ? (
+              }
+              cursor={{ fill: "rgba(15, 118, 110, 0.06)" }}
+            />
+            <Legend
+              wrapperStyle={{ fontSize: 12, paddingTop: 4 }}
+              formatter={legendFormatter}
+            />
+            {mode === "stacked" ? (
+              <>
                 <Bar
-                  dataKey="depKr"
-                  name="depKr"
+                  yAxisId="left"
+                  dataKey="completedKr"
+                  name="completedKr"
                   stackId="a"
-                  fill={COLORS.dep}
+                  fill={COLORS.completed}
+                />
+                <Bar
+                  yAxisId="left"
+                  dataKey="upcomingKr"
+                  name="upcomingKr"
+                  stackId="a"
+                  fill={COLORS.upcoming}
+                  radius={showCosts || showDep ? [0, 0, 0, 0] : [3, 3, 0, 0]}
+                />
+                {showCosts ? (
+                  <Bar
+                    yAxisId="left"
+                    dataKey="costsKr"
+                    name="costsKr"
+                    stackId="a"
+                    fill={COLORS.costs}
+                    radius={showDep ? [0, 0, 0, 0] : [3, 3, 0, 0]}
+                  />
+                ) : null}
+                {showDep ? (
+                  <Bar
+                    yAxisId="left"
+                    dataKey="depKr"
+                    name="depKr"
+                    stackId="a"
+                    fill={COLORS.dep}
+                    radius={[3, 3, 0, 0]}
+                  />
+                ) : null}
+              </>
+            ) : (
+              <>
+                <Line
+                  yAxisId="left"
+                  type="monotone"
+                  dataKey="actualKr"
+                  name="actualKr"
+                  stroke={COLORS.completed}
+                  strokeWidth={2.5}
+                  dot={false}
+                  activeDot={{ r: 4 }}
+                  connectNulls={false}
+                />
+                <Line
+                  yAxisId="left"
+                  type="monotone"
+                  dataKey="forecastKr"
+                  name="forecastKr"
+                  stroke={COLORS.upcoming}
+                  strokeWidth={2.5}
+                  strokeDasharray="6 4"
+                  dot={false}
+                  activeDot={{ r: 4 }}
+                  connectNulls={false}
+                />
+                {showCosts ? (
+                  <Line
+                    yAxisId="left"
+                    type="monotone"
+                    dataKey="costsKr"
+                    name="costsKr"
+                    stroke={COLORS.costs}
+                    strokeWidth={1.5}
+                    strokeDasharray="3 3"
+                    dot={false}
+                    activeDot={{ r: 3 }}
+                  />
+                ) : null}
+                {showDep ? (
+                  <Line
+                    yAxisId="left"
+                    type="monotone"
+                    dataKey="depKr"
+                    name="depKr"
+                    stroke={COLORS.dep}
+                    strokeWidth={1.5}
+                    strokeDasharray="3 3"
+                    dot={false}
+                    activeDot={{ r: 3 }}
+                  />
+                ) : null}
+              </>
+            )}
+          </ComposedChart>
+        </ResponsiveContainer>
+      </div>
+
+      {/* Kilometres — flush under earnings */}
+      <div className="border-t border-stone-100 pt-1">
+        <div className="mb-0.5 flex items-baseline justify-between gap-2">
+          <h3 className="text-xs font-semibold text-stone-800">
+            Weekly kilometres
+          </h3>
+          <p className="text-[11px] text-stone-500">
+            Completed bookings
+            {mode === "cumulative" ? " · cumulative" : ""}
+          </p>
+        </div>
+        <div className="h-44 w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <ComposedChart data={chartData} margin={AXIS.margin}>
+              <ChartGrid />
+              <WeekXAxis />
+              <YAxis
+                yAxisId="left"
+                tick={{ fontSize: 10, fill: "#78716c" }}
+                tickFormatter={compactNumber}
+                width={AXIS.leftWidth}
+              />
+              <SpacerRightAxis />
+              <Tooltip content={<KmTooltip mode={mode} />} />
+              {mode === "stacked" ? (
+                <Bar
+                  yAxisId="left"
+                  dataKey="kmValue"
+                  name="kmValue"
+                  fill={COLORS.km}
                   radius={[3, 3, 0, 0]}
                 />
-              ) : null}
-            </BarChart>
-          ) : (
-            <LineChart
-              data={chartData}
-              margin={{ top: 8, right: 8, left: 0, bottom: 0 }}
-            >
-              <CartesianGrid
-                strokeDasharray="3 3"
-                stroke="#e7e5e4"
-                vertical={false}
-              />
-              <XAxis
-                dataKey="weekNumber"
-                tick={{ fontSize: 9, fill: "#78716c" }}
-                interval={0}
-                tickFormatter={(v: number) => `${v}`}
-              />
+              ) : (
+                <Line
+                  yAxisId="left"
+                  type="monotone"
+                  dataKey="kmValue"
+                  name="kmValue"
+                  stroke={COLORS.km}
+                  strokeWidth={2.5}
+                  dot={false}
+                  activeDot={{ r: 4 }}
+                />
+              )}
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      {/* Revenue / km — flush under km */}
+      <div className="border-t border-stone-100 pt-1">
+        <div className="mb-0.5 flex items-baseline justify-between gap-2">
+          <h3 className="text-xs font-semibold text-stone-800">
+            Revenue per kilometre
+          </h3>
+          <p className="text-[11px] text-stone-500">
+            Completed revenue ÷ km
+            {mode === "cumulative" ? " · cumulative avg" : ""}
+          </p>
+        </div>
+        <div className="h-44 w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <ComposedChart data={chartData} margin={AXIS.margin}>
+              <ChartGrid />
+              <WeekXAxis />
               <YAxis
+                yAxisId="left"
                 tick={{ fontSize: 10, fill: "#78716c" }}
-                tickFormatter={(v: number) =>
-                  new Intl.NumberFormat("nb-NO", {
-                    notation: "compact",
-                    compactDisplay: "short",
-                  }).format(v)
-                }
-                width={48}
+                tickFormatter={(v: number) => `${compactNumber(v)} kr`}
+                width={AXIS.leftWidth}
               />
-              <Tooltip
-                content={
-                  <ChartTooltip
-                    mode={mode}
-                    showCosts={showCosts}
-                    showDep={showDep}
-                  />
-                }
-              />
-              <Legend
-                wrapperStyle={{ fontSize: 12 }}
-                formatter={legendFormatter}
-              />
-              <Line
-                type="monotone"
-                dataKey="actualKr"
-                name="actualKr"
-                stroke={COLORS.completed}
-                strokeWidth={2.5}
-                dot={false}
-                activeDot={{ r: 4 }}
-                connectNulls={false}
-              />
-              <Line
-                type="monotone"
-                dataKey="forecastKr"
-                name="forecastKr"
-                stroke={COLORS.upcoming}
-                strokeWidth={2.5}
-                strokeDasharray="6 4"
-                dot={false}
-                activeDot={{ r: 4 }}
-                connectNulls={false}
-              />
-              {showCosts ? (
-                <Line
-                  type="monotone"
-                  dataKey="costsKr"
-                  name="costsKr"
-                  stroke={COLORS.costs}
-                  strokeWidth={1.5}
-                  strokeDasharray="3 3"
-                  dot={false}
-                  activeDot={{ r: 3 }}
+              <SpacerRightAxis />
+              <Tooltip content={<RevPerKmTooltip mode={mode} />} />
+              {mode === "stacked" ? (
+                <Bar
+                  yAxisId="left"
+                  dataKey="revPerKmKr"
+                  name="revPerKmKr"
+                  fill={COLORS.revPerKm}
+                  radius={[3, 3, 0, 0]}
                 />
-              ) : null}
-              {showDep ? (
+              ) : (
                 <Line
+                  yAxisId="left"
                   type="monotone"
-                  dataKey="depKr"
-                  name="depKr"
-                  stroke={COLORS.dep}
-                  strokeWidth={1.5}
-                  strokeDasharray="3 3"
+                  dataKey="revPerKmKr"
+                  name="revPerKmKr"
+                  stroke={COLORS.revPerKm}
+                  strokeWidth={2.5}
                   dot={false}
-                  activeDot={{ r: 3 }}
+                  activeDot={{ r: 4 }}
+                  connectNulls={false}
                 />
-              ) : null}
-            </LineChart>
-          )}
-        </ResponsiveContainer>
+              )}
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
       </div>
     </div>
   );

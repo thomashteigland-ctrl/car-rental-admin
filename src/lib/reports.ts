@@ -98,6 +98,12 @@ export type WeeklyPoint = {
   depOre: number;
   /** Direct costs + service for the week */
   costsOre: number;
+  /** Driven km from completed bookings, spread across rental days */
+  km: number;
+  /** Revenue from status=completed bookings (rev/km numerator) */
+  completedBookingRevenueOre: number;
+  /** Completed-booking revenue ÷ km for the week (øre/km); null when no km */
+  revenuePerKmOre: number | null;
   monthRevenueOre: number;
   monthRevenueCompletedOre: number;
   monthRevenueUpcomingOre: number;
@@ -105,12 +111,16 @@ export type WeeklyPoint = {
   monthServiceOre: number;
   monthDepOre: number;
   monthCostsOre: number;
+  monthKm: number;
   /** Cumulative from series start through this week */
   cumRevenueOre: number;
   cumRevenueCompletedOre: number;
   cumRevenueUpcomingOre: number;
   cumCostsOre: number;
   cumDepOre: number;
+  cumKm: number;
+  /** Cumulative completed revenue ÷ cum km (øre/km); null when no km */
+  cumRevenuePerKmOre: number | null;
 };
 
 /** Split an integer amount into n nearly-equal integer parts (exact sum). */
@@ -165,9 +175,12 @@ export async function weeklyEconomicsSeries(
     weekStart: Date;
     revenueCompletedOre: number;
     revenueUpcomingOre: number;
+    /** Revenue from status=completed bookings (numerator for rev/km) */
+    completedBookingRevenueOre: number;
     costOre: number;
     serviceOre: number;
     depOre: number;
+    km: number;
   };
 
   const weeks = new Map<string, Bucket>();
@@ -183,9 +196,11 @@ export async function weeklyEconomicsSeries(
         weekStart: start,
         revenueCompletedOre: 0,
         revenueUpcomingOre: 0,
+        completedBookingRevenueOre: 0,
         costOre: 0,
         serviceOre: 0,
         depOre: 0,
+        km: 0,
       };
       weeks.set(key, b);
     }
@@ -200,12 +215,18 @@ export async function weeklyEconomicsSeries(
    * Spread amounts evenly across each inclusive calendar day of the booking,
    * attributing each day to its Monday-start week. Revenue is split into
    * completed (past / completed status) vs upcoming (today and future).
+   * Driven km is only allocated for completed bookings.
    */
   function allocateAcrossDays(
     bookingStart: Date,
     bookingEnd: Date,
     status: string,
-    amounts: { revenueOre: number; costOre: number; depOre: number },
+    amounts: {
+      revenueOre: number;
+      costOre: number;
+      depOre: number;
+      km: number;
+    },
   ) {
     const dayStart = startOfDay(bookingStart);
     const dayEnd = startOfDay(bookingEnd);
@@ -222,6 +243,7 @@ export async function weeklyEconomicsSeries(
     const revShares = splitEvenly(amounts.revenueOre, dayCount);
     const costShares = splitEvenly(amounts.costOre, dayCount);
     const depShares = splitEvenly(amounts.depOre, dayCount);
+    const kmShares = splitEvenly(amounts.km, dayCount);
     const forceCompleted = status === "completed";
 
     days.forEach((day, i) => {
@@ -232,8 +254,12 @@ export async function weeklyEconomicsSeries(
       } else {
         bucket.revenueUpcomingOre += revShares[i];
       }
+      if (forceCompleted) {
+        bucket.completedBookingRevenueOre += revShares[i];
+      }
       bucket.costOre += costShares[i];
       bucket.depOre += depShares[i];
+      bucket.km += kmShares[i];
     });
   }
 
@@ -241,10 +267,13 @@ export async function weeklyEconomicsSeries(
     const linked = b.serviceEvents.reduce((s, e) => s + e.amountOre, 0);
     const rates = effectiveDepRates(asMarketCar(b.car), fitMap);
     const econ = bookingEconomics(b, rates, linked);
+    // Driven km is only reliable once the rental is completed.
+    const km = b.status === "completed" ? (econ.distanceDriven ?? 0) : 0;
     allocateAcrossDays(b.plannedStartAt, b.plannedEndAt, b.status, {
       revenueOre: econ.revenueExVatOre,
       costOre: econ.costExVatOre,
       depOre: econ.expectedDepOre,
+      km,
     });
   }
 
@@ -264,6 +293,7 @@ export async function weeklyEconomicsSeries(
       costOre: number;
       serviceOre: number;
       depOre: number;
+      km: number;
     }
   >();
   for (const w of sorted) {
@@ -274,12 +304,14 @@ export async function weeklyEconomicsSeries(
       costOre: 0,
       serviceOre: 0,
       depOre: 0,
+      km: 0,
     };
     m.revenueCompletedOre += w.revenueCompletedOre;
     m.revenueUpcomingOre += w.revenueUpcomingOre;
     m.costOre += w.costOre;
     m.serviceOre += w.serviceOre;
     m.depOre += w.depOre;
+    m.km += w.km;
     monthTotals.set(mk, m);
   }
 
@@ -288,6 +320,8 @@ export async function weeklyEconomicsSeries(
   let cumUpcoming = 0;
   let cumCosts = 0;
   let cumDep = 0;
+  let cumKm = 0;
+  let cumCompletedBookingRevenue = 0;
 
   return sorted.map((w) => {
     const revenueOre = w.revenueCompletedOre + w.revenueUpcomingOre;
@@ -297,6 +331,8 @@ export async function weeklyEconomicsSeries(
     cumUpcoming += w.revenueUpcomingOre;
     cumCosts += costsOre;
     cumDep += w.depOre;
+    cumKm += w.km;
+    cumCompletedBookingRevenue += w.completedBookingRevenueOre;
     const weekEnd = addDays(w.weekStart, 6);
     const monthKey = format(w.weekStart, "yyyy-MM");
     const mt = monthTotals.get(monthKey)!;
@@ -314,6 +350,12 @@ export async function weeklyEconomicsSeries(
       serviceOre: w.serviceOre,
       depOre: w.depOre,
       costsOre,
+      km: w.km,
+      completedBookingRevenueOre: w.completedBookingRevenueOre,
+      revenuePerKmOre:
+        w.km > 0
+          ? Math.round(w.completedBookingRevenueOre / w.km)
+          : null,
       monthRevenueOre,
       monthRevenueCompletedOre: mt.revenueCompletedOre,
       monthRevenueUpcomingOre: mt.revenueUpcomingOre,
@@ -321,11 +363,17 @@ export async function weeklyEconomicsSeries(
       monthServiceOre: mt.serviceOre,
       monthDepOre: mt.depOre,
       monthCostsOre: mt.costOre + mt.serviceOre,
+      monthKm: mt.km,
       cumRevenueOre: cumRevenue,
       cumRevenueCompletedOre: cumCompleted,
       cumRevenueUpcomingOre: cumUpcoming,
       cumCostsOre: cumCosts,
       cumDepOre: cumDep,
+      cumKm,
+      cumRevenuePerKmOre:
+        cumKm > 0
+          ? Math.round(cumCompletedBookingRevenue / cumKm)
+          : null,
     };
   });
 }

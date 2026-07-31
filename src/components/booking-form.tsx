@@ -1,14 +1,22 @@
 "use client";
 
-import { useActionState } from "react";
+import {
+  useActionState,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   upsertBookingAction,
   type BookingFormState,
 } from "@/app/actions/bookings";
-import { Button, Field, inputClass } from "@/components/ui";
+import { Field, inputClass } from "@/components/ui";
 import { toDateInputValue } from "@/lib/dates";
 import { BOOKING_STATUSES, CHANNELS, labelStatus } from "@/lib/labels";
 import type { Booking, Car } from "@prisma/client";
+
+const SAVE_DEBOUNCE_MS = 500;
 
 export function BookingForm({
   booking,
@@ -17,13 +25,82 @@ export function BookingForm({
   booking: Booking;
   cars: Car[];
 }) {
-  const [state, action, pending] = useActionState<BookingFormState, FormData>(
-    upsertBookingAction,
-    null,
+  const [state, formAction, pending] = useActionState<
+    BookingFormState,
+    FormData
+  >(upsertBookingAction, null);
+
+  const formRef = useRef<HTMLFormElement>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wasPending = useRef(false);
+  const [savedFlash, setSavedFlash] = useState(false);
+
+  useEffect(() => {
+    if (wasPending.current && !pending && !state?.error) {
+      setSavedFlash(true);
+      const t = setTimeout(() => setSavedFlash(false), 1600);
+      wasPending.current = pending;
+      return () => clearTimeout(t);
+    }
+    wasPending.current = pending;
+  }, [pending, state]);
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
+  }, []);
+
+  const submitNow = useCallback(() => {
+    const form = formRef.current;
+    if (!form) return;
+    const fd = new FormData(form);
+    const customerName = String(fd.get("customerName") ?? "").trim();
+    const carId = String(fd.get("carId") ?? "");
+    const start = String(fd.get("plannedStartAt") ?? "");
+    const end = String(fd.get("plannedEndAt") ?? "");
+    // Skip while required fields are empty mid-edit
+    if (!customerName || !carId || !start || !end) return;
+    formAction(fd);
+  }, [formAction]);
+
+  const scheduleSave = useCallback(
+    (delayMs = SAVE_DEBOUNCE_MS) => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => {
+        timerRef.current = null;
+        submitNow();
+      }, delayMs);
+    },
+    [submitNow],
   );
 
+  const flushSave = useCallback(() => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    submitNow();
+  }, [submitNow]);
+
   return (
-    <form action={action} className="space-y-6">
+    <form
+      ref={formRef}
+      action={formAction}
+      className="space-y-6"
+      onChange={(e) => {
+        const el = e.target;
+        const immediate =
+          el instanceof HTMLSelectElement ||
+          (el instanceof HTMLInputElement && el.type === "date");
+        scheduleSave(immediate ? 100 : SAVE_DEBOUNCE_MS);
+      }}
+      onBlur={(e) => {
+        const next = e.relatedTarget as Node | null;
+        if (next && formRef.current?.contains(next)) return;
+        flushSave();
+      }}
+    >
       <input type="hidden" name="id" value={booking.id} />
 
       {state?.error ? (
@@ -36,9 +113,23 @@ export function BookingForm({
       ) : null}
 
       <section className="rounded-xl border border-stone-200 bg-white p-4 shadow-sm">
-        <h2 className="mb-4 text-sm font-semibold text-stone-900">
-          Edit booking
-        </h2>
+        <div className="mb-4 flex items-baseline justify-between gap-3">
+          <h2 className="text-sm font-semibold text-stone-900">
+            Edit booking
+          </h2>
+          <p
+            className="text-xs text-stone-500 tabular-nums"
+            aria-live="polite"
+          >
+            {pending
+              ? "Saving…"
+              : state?.error
+                ? "Couldn’t save"
+                : savedFlash
+                  ? "Saved"
+                  : "Autosaves"}
+          </p>
+        </div>
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Car">
             <select
@@ -144,12 +235,6 @@ export function BookingForm({
           </Field>
         </div>
       </section>
-
-      <div className="flex gap-2">
-        <Button type="submit" disabled={pending}>
-          {pending ? "Saving…" : "Save changes"}
-        </Button>
-      </div>
     </form>
   );
 }
