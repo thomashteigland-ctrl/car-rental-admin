@@ -12,6 +12,7 @@ import {
   annualizedRunRate,
   fleetExpectedValue,
   getAlerts,
+  loadSettledPeriodBookings,
   monthParam,
   nextPeriod,
   periodFromMonthParam,
@@ -94,29 +95,30 @@ export async function loadDashboardData(opts: {
 
   const windowed = filterWeeklyByRange(weekly, rangeKey);
   const rangePeriod = periodFromWeeklyWindow(windowed);
-  const rangeSummary = await periodSummary(
-    rangePeriod.from,
-    rangePeriod.to,
-    fits,
-  );
+  const [rangeSummary, settledBookings] = await Promise.all([
+    periodSummary(rangePeriod.from, rangePeriod.to, fits),
+    loadSettledPeriodBookings(rangePeriod.from, rangePeriod.to),
+  ]);
 
-  // Run-rate span = first→last rental start in the selected period (not calendar window).
-  const span = rentalStartSpan(rangeSummary.bookings);
+  // Run-rate only from settled outcomes (completed + no-show), not upcoming.
+  let settledRevenueOre = 0;
+  let settledKm = 0;
+  for (const b of settledBookings) {
+    settledRevenueOre += sumLineItems(b.lineItems, "revenue").exVatOre;
+    settledKm += distanceDriven(b) ?? 0;
+  }
+  const span = rentalStartSpan(settledBookings);
   const runRateRevenueOre = span
-    ? annualizedRunRate(
-        rangeSummary.revenueExVatOre,
-        span.from,
-        span.to,
-      )
+    ? annualizedRunRate(settledRevenueOre, span.from, span.to)
     : 0;
   const runRateKm = span
-    ? annualizedRunRate(rangeSummary.rentedKm, span.from, span.to)
+    ? annualizedRunRate(settledKm, span.from, span.to)
     : 0;
 
   // Avg revenue/km only from completed rentals (driven km is reliable there).
   let completedRevenueOre = 0;
   let completedKm = 0;
-  for (const b of rangeSummary.bookings) {
+  for (const b of settledBookings) {
     if (b.status !== "completed") continue;
     completedRevenueOre += sumLineItems(b.lineItems, "revenue").exVatOre;
     completedKm += distanceDriven(b) ?? 0;

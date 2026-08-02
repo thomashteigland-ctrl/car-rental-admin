@@ -394,6 +394,19 @@ export async function loadPeriodBookings(from: Date, to: Date) {
   });
 }
 
+/** Completed + no-show bookings overlapping the period — basis for run-rate. */
+export async function loadSettledPeriodBookings(from: Date, to: Date) {
+  return prisma.booking.findMany({
+    where: {
+      status: { in: ["completed", "no_show"] },
+      plannedStartAt: { lte: to },
+      plannedEndAt: { gte: from },
+    },
+    include: { lineItems: true },
+    orderBy: { plannedStartAt: "desc" },
+  });
+}
+
 export async function periodSummary(
   from: Date,
   to: Date,

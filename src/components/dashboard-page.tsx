@@ -127,7 +127,7 @@ function DashboardView({
           <StatCard
             label="Run-rate revenue"
             value={formatNOK(runRateRevenueOre)}
-            hint="Annualized · revenue × 365 / (max − min rental start)"
+            hint="Annualized · completed + no-show · × 365 / (max − min start)"
           />
           <StatCard
             label="Revenue this period"
@@ -139,7 +139,7 @@ function DashboardView({
           <StatCard
             label="Run-rate kilometers"
             value={formatKm(runRateKm)}
-            hint="Annualized · km × 365 / (max − min rental start)"
+            hint="Annualized · completed + no-show · × 365 / (max − min start)"
           />
           <StatCard
             label="Kilometers rented this period"
