@@ -20,7 +20,12 @@ export function bookingsCsv(data: AppData): string {
     "Dep",
     "EconomicProfit",
   ];
-  const rows = data.bookings.map((b) => {
+  const rows = [...data.bookings]
+    .sort(
+      (a, b) =>
+        new Date(b.plannedStartAt).getTime() - new Date(a.plannedStartAt).getTime(),
+    )
+    .map((b) => {
     const car = data.cars.find((c) => c.id === b.carId);
     const lineItems = data.lineItems.filter((i) => i.bookingId === b.id);
     const serviceOre = data.serviceEvents

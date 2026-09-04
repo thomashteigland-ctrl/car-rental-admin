@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { Link } from "react-router-dom";
 import { Badge, Button, EmptyState, PageHeader } from "@/components/ui";
 import { bookingEconomics } from "@/lib/booking-calc";
+import { bookingsCsv, downloadText } from "@/lib/csv";
 import { formatBookingWhen } from "@/lib/dates";
 import { labelStatus, statusTone } from "@/lib/labels";
 import { fitsFromData, effectiveDepRates } from "@/lib/market/depreciation";
@@ -55,12 +56,28 @@ export function BookingsPage() {
       });
   }, [data, fits]);
 
+  function exportCsv() {
+    const stamp = new Date().toISOString().slice(0, 10);
+    downloadText(`bookings-${stamp}.csv`, bookingsCsv(data), "text/csv");
+  }
+
   return (
     <div>
       <PageHeader
         title="Bookings"
         subtitle="Rentals with schedule, distance and P&L"
-        actions={<Button href="/bookings/new">New booking</Button>}
+        actions={
+          <>
+            <Button
+              variant="secondary"
+              onClick={exportCsv}
+              disabled={data.bookings.length === 0}
+            >
+              Export CSV
+            </Button>
+            <Button href="/bookings/new">New booking</Button>
+          </>
+        }
       />
       {bookings.length === 0 ? (
         <EmptyState
