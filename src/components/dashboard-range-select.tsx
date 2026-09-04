@@ -1,6 +1,4 @@
-"use client";
-
-import { useRouter } from "next/navigation";
+import { useNavigate } from "react-router-dom";
 import {
   DASHBOARD_RANGES,
   type DashboardRangeKey,
@@ -13,7 +11,7 @@ export function DashboardRangeSelect({
   range: DashboardRangeKey;
   month?: string | null;
 }) {
-  const router = useRouter();
+  const navigate = useNavigate();
 
   return (
     <label className="flex items-center gap-2 text-sm text-stone-600">
@@ -26,7 +24,7 @@ export function DashboardRangeSelect({
           if (next !== "ytd") q.set("range", next);
           if (month) q.set("month", month);
           const s = q.toString();
-          router.push(s ? `/?${s}` : "/");
+          navigate(s ? `/?${s}` : "/");
         }}
         className="rounded-lg border border-stone-300 bg-white px-2.5 py-1.5 text-sm text-stone-800 outline-none ring-teal-700/30 focus:ring-2"
       >

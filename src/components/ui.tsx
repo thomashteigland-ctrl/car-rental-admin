@@ -1,5 +1,5 @@
-import Link from "next/link";
-import { ReactNode } from "react";
+import type { ReactNode } from "react";
+import { Link } from "react-router-dom";
 
 export function PageHeader({
   title,
@@ -51,7 +51,6 @@ export function StatCard({
   label: string;
   value: string;
   hint?: string;
-  /** e.g. share of revenue shown beside the main value */
   pct?: string;
   tone?: "default" | "good" | "bad" | "warn";
 }) {
@@ -90,6 +89,7 @@ export function Button({
   type = "button",
   className = "",
   disabled = false,
+  onClick,
 }: {
   children: ReactNode;
   href?: string;
@@ -97,6 +97,7 @@ export function Button({
   type?: "button" | "submit";
   className?: string;
   disabled?: boolean;
+  onClick?: () => void;
 }) {
   const styles =
     variant === "primary"
@@ -109,13 +110,13 @@ export function Button({
   const cls = `inline-flex items-center justify-center rounded-lg px-3 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60 ${styles} ${className}`;
   if (href) {
     return (
-      <Link href={href} className={cls}>
+      <Link to={href} className={cls}>
         {children}
       </Link>
     );
   }
   return (
-    <button type={type} className={cls} disabled={disabled}>
+    <button type={type} className={cls} disabled={disabled} onClick={onClick}>
       {children}
     </button>
   );

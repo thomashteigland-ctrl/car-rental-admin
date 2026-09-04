@@ -23,36 +23,42 @@ import {
 import { sumProratedFixedCostsOre } from "./fixed-costs";
 import {
   effectiveDepRates,
-  loadMarketFitCache,
   type MarketDepInput,
 } from "./market/depreciation";
 import type { FitResult } from "./market/fit";
-import { prisma } from "./prisma";
+import type { AppData, Booking, Car, ServiceEvent } from "./types";
 
 type FitCache = Record<string, FitResult>;
 
-const carWithMarket = {
-  include: { marketModel: { select: { variant: true } } },
-} as const;
+function asDate(value: string | Date): Date {
+  return value instanceof Date ? value : new Date(value);
+}
 
-function asMarketCar(car: {
-  purchasePriceOre: number | null;
-  purchaseOdometer: number;
-  fuelType: string | null;
-  marketModelId: string | null;
-  marketModel: { variant: string } | null;
-  depPerKmOre: number;
-  depPerDayOre: number;
-}): MarketDepInput {
+function asMarketCar(
+  car: Car,
+  models: AppData["marketModels"],
+): MarketDepInput {
+  const marketModel = car.marketModelId
+    ? (models.find((m) => m.id === car.marketModelId) ?? null)
+    : null;
   return {
     purchasePriceOre: car.purchasePriceOre,
     purchaseOdometer: car.purchaseOdometer,
     fuelType: car.fuelType,
     marketModelId: car.marketModelId,
-    marketModel: car.marketModel,
+    marketModel: marketModel ? { variant: marketModel.variant } : null,
     depPerKmOre: car.depPerKmOre,
     depPerDayOre: car.depPerDayOre,
   };
+}
+
+function overlaps(
+  start: Date,
+  end: Date,
+  from: Date,
+  to: Date,
+): boolean {
+  return start <= to && end >= from;
 }
 
 export type Period = { from: Date; to: Date };
@@ -96,13 +102,9 @@ export type WeeklyPoint = {
   costOre: number;
   serviceOre: number;
   depOre: number;
-  /** Direct costs + service for the week */
   costsOre: number;
-  /** Driven km from completed bookings, spread across rental days */
   km: number;
-  /** Revenue from status=completed bookings (rev/km numerator) */
   completedBookingRevenueOre: number;
-  /** Completed-booking revenue ÷ km for the week (øre/km); null when no km */
   revenuePerKmOre: number | null;
   monthRevenueOre: number;
   monthRevenueCompletedOre: number;
@@ -112,18 +114,15 @@ export type WeeklyPoint = {
   monthDepOre: number;
   monthCostsOre: number;
   monthKm: number;
-  /** Cumulative from series start through this week */
   cumRevenueOre: number;
   cumRevenueCompletedOre: number;
   cumRevenueUpcomingOre: number;
   cumCostsOre: number;
   cumDepOre: number;
   cumKm: number;
-  /** Cumulative completed revenue ÷ cum km (øre/km); null when no km */
   cumRevenuePerKmOre: number | null;
 };
 
-/** Split an integer amount into n nearly-equal integer parts (exact sum). */
 function splitEvenly(total: number, n: number): number[] {
   if (n <= 0) return [];
   const base = Math.floor(total / n);
@@ -137,45 +136,47 @@ function splitEvenly(total: number, n: number): number[] {
   });
 }
 
-/**
- * Monday-start weeks from year start through year end so confirmed/active
- * bookings later in the year (upcoming revenue) are included — not cut off
- * at the current month.
- */
-export async function weeklyEconomicsSeries(
+function bookingWithRelations(data: AppData, b: Booking) {
+  const car = data.cars.find((c) => c.id === b.carId);
+  if (!car) return null;
+  return {
+    ...b,
+    plannedStartAt: asDate(b.plannedStartAt),
+    plannedEndAt: asDate(b.plannedEndAt),
+    car,
+    lineItems: data.lineItems.filter((i) => i.bookingId === b.id),
+    serviceEvents: data.serviceEvents.filter((e) => e.bookingId === b.id),
+  };
+}
+
+export function weeklyEconomicsSeries(
+  data: AppData,
   periodTo: Date,
-  fits?: FitCache,
-): Promise<WeeklyPoint[]> {
+  fits: FitCache,
+): WeeklyPoint[] {
   const from = startOfYear(periodTo);
   const to = endOfYear(periodTo);
   const rangeStart = startOfWeek(from, { weekStartsOn: 1 });
   const rangeEnd = endOfWeek(to, { weekStartsOn: 1 });
 
-  const [bookings, serviceEvents, fitMap] = await Promise.all([
-    prisma.booking.findMany({
-      where: {
-        status: { notIn: ["cancelled", "no_show", "draft"] },
-        plannedStartAt: { lte: rangeEnd },
-        plannedEndAt: { gte: rangeStart },
-      },
-      include: {
-        car: carWithMarket,
-        lineItems: true,
-        serviceEvents: true,
-      },
-    }),
-    prisma.serviceEvent.findMany({
-      where: { occurredOn: { gte: rangeStart, lte: rangeEnd } },
-    }),
-    fits ? Promise.resolve(fits) : loadMarketFitCache(),
-  ]);
+  const bookings = data.bookings
+    .filter((b) => !["cancelled", "no_show", "draft"].includes(b.status))
+    .filter((b) =>
+      overlaps(asDate(b.plannedStartAt), asDate(b.plannedEndAt), rangeStart, rangeEnd),
+    )
+    .map((b) => bookingWithRelations(data, b))
+    .filter((b): b is NonNullable<typeof b> => b != null);
+
+  const serviceEvents = data.serviceEvents.filter((e) => {
+    const d = asDate(e.occurredOn);
+    return d >= rangeStart && d <= rangeEnd;
+  });
 
   type Bucket = {
     weekKey: string;
     weekStart: Date;
     revenueCompletedOre: number;
     revenueUpcomingOre: number;
-    /** Revenue from status=completed bookings (numerator for rev/km) */
     completedBookingRevenueOre: number;
     costOre: number;
     serviceOre: number;
@@ -211,12 +212,6 @@ export async function weeklyEconomicsSeries(
     ensure(d);
   }
 
-  /**
-   * Spread amounts evenly across each inclusive calendar day of the booking,
-   * attributing each day to its Monday-start week. Revenue is split into
-   * completed (past / completed status) vs upcoming (today and future).
-   * Driven km is only allocated for completed bookings.
-   */
   function allocateAcrossDays(
     bookingStart: Date,
     bookingEnd: Date,
@@ -230,15 +225,9 @@ export async function weeklyEconomicsSeries(
   ) {
     const dayStart = startOfDay(bookingStart);
     const dayEnd = startOfDay(bookingEnd);
-    const dayCount = Math.max(
-      1,
-      differenceInCalendarDays(dayEnd, dayStart) + 1,
-    );
-
+    const dayCount = Math.max(1, differenceInCalendarDays(dayEnd, dayStart) + 1);
     const days: Date[] = [];
-    for (let i = 0; i < dayCount; i++) {
-      days.push(addDays(dayStart, i));
-    }
+    for (let i = 0; i < dayCount; i++) days.push(addDays(dayStart, i));
 
     const revShares = splitEvenly(amounts.revenueOre, dayCount);
     const costShares = splitEvenly(amounts.costOre, dayCount);
@@ -254,9 +243,7 @@ export async function weeklyEconomicsSeries(
       } else {
         bucket.revenueUpcomingOre += revShares[i];
       }
-      if (forceCompleted) {
-        bucket.completedBookingRevenueOre += revShares[i];
-      }
+      if (forceCompleted) bucket.completedBookingRevenueOre += revShares[i];
       bucket.costOre += costShares[i];
       bucket.depOre += depShares[i];
       bucket.km += kmShares[i];
@@ -265,9 +252,8 @@ export async function weeklyEconomicsSeries(
 
   for (const b of bookings) {
     const linked = b.serviceEvents.reduce((s, e) => s + e.amountOre, 0);
-    const rates = effectiveDepRates(asMarketCar(b.car), fitMap);
+    const rates = effectiveDepRates(asMarketCar(b.car, data.marketModels), fits);
     const econ = bookingEconomics(b, rates, linked);
-    // Driven km is only reliable once the rental is completed.
     const km = b.status === "completed" ? (econ.distanceDriven ?? 0) : 0;
     allocateAcrossDays(b.plannedStartAt, b.plannedEndAt, b.status, {
       revenueOre: econ.revenueExVatOre,
@@ -278,7 +264,7 @@ export async function weeklyEconomicsSeries(
   }
 
   for (const e of serviceEvents) {
-    ensure(e.occurredOn).serviceOre += e.amountOre;
+    ensure(asDate(e.occurredOn)).serviceOre += e.amountOre;
   }
 
   const sorted = [...weeks.values()].sort(
@@ -353,9 +339,7 @@ export async function weeklyEconomicsSeries(
       km: w.km,
       completedBookingRevenueOre: w.completedBookingRevenueOre,
       revenuePerKmOre:
-        w.km > 0
-          ? Math.round(w.completedBookingRevenueOre / w.km)
-          : null,
+        w.km > 0 ? Math.round(w.completedBookingRevenueOre / w.km) : null,
       monthRevenueOre,
       monthRevenueCompletedOre: mt.revenueCompletedOre,
       monthRevenueUpcomingOre: mt.revenueUpcomingOre,
@@ -378,47 +362,34 @@ export async function weeklyEconomicsSeries(
   });
 }
 
-export async function loadPeriodBookings(from: Date, to: Date) {
-  return prisma.booking.findMany({
-    where: {
-      status: { notIn: ["cancelled", "no_show", "draft"] },
-      plannedStartAt: { lte: to },
-      plannedEndAt: { gte: from },
-    },
-    include: {
-      car: carWithMarket,
-      lineItems: true,
-      serviceEvents: true,
-    },
-    orderBy: { plannedStartAt: "desc" },
-  });
+export function loadPeriodBookings(data: AppData, from: Date, to: Date) {
+  return data.bookings
+    .filter((b) => !["cancelled", "no_show", "draft"].includes(b.status))
+    .filter((b) =>
+      overlaps(asDate(b.plannedStartAt), asDate(b.plannedEndAt), from, to),
+    )
+    .map((b) => bookingWithRelations(data, b))
+    .filter((b): b is NonNullable<typeof b> => b != null)
+    .sort((a, b) => b.plannedStartAt.getTime() - a.plannedStartAt.getTime());
 }
 
-/** Completed + no-show bookings overlapping the period — basis for run-rate. */
-export async function loadSettledPeriodBookings(from: Date, to: Date) {
-  return prisma.booking.findMany({
-    where: {
-      status: { in: ["completed", "no_show"] },
-      plannedStartAt: { lte: to },
-      plannedEndAt: { gte: from },
-    },
-    include: { lineItems: true },
-    orderBy: { plannedStartAt: "desc" },
-  });
+export function loadSettledPeriodBookings(data: AppData, from: Date, to: Date) {
+  return data.bookings
+    .filter((b) => b.status === "completed" || b.status === "no_show")
+    .filter((b) =>
+      overlaps(asDate(b.plannedStartAt), asDate(b.plannedEndAt), from, to),
+    )
+    .map((b) => bookingWithRelations(data, b))
+    .filter((b): b is NonNullable<typeof b> => b != null)
+    .sort((a, b) => b.plannedStartAt.getTime() - a.plannedStartAt.getTime());
 }
 
-export async function periodSummary(
-  from: Date,
-  to: Date,
-  fits?: FitCache,
-) {
-  const [bookings, serviceEvents, fitMap] = await Promise.all([
-    loadPeriodBookings(from, to),
-    prisma.serviceEvent.findMany({
-      where: { occurredOn: { gte: from, lte: to } },
-    }),
-    fits ? Promise.resolve(fits) : loadMarketFitCache(),
-  ]);
+export function periodSummary(data: AppData, from: Date, to: Date, fits: FitCache) {
+  const bookings = loadPeriodBookings(data, from, to);
+  const serviceEvents = data.serviceEvents.filter((e) => {
+    const d = asDate(e.occurredOn);
+    return d >= from && d <= to;
+  });
 
   let revenueExVatOre = 0;
   let costExVatOre = 0;
@@ -441,16 +412,15 @@ export async function periodSummary(
   >();
 
   for (const b of bookings) {
-    const linked = b.serviceEvents.reduce((s, e) => s + e.amountOre, 0);
-    const rates = effectiveDepRates(asMarketCar(b.car), fitMap);
+    const linked = b.serviceEvents.reduce((s: number, e: ServiceEvent) => s + e.amountOre, 0);
+    const rates = effectiveDepRates(asMarketCar(b.car, data.marketModels), fits);
     const econ = bookingEconomics(b, rates, linked);
     revenueExVatOre += econ.revenueExVatOre;
     costExVatOre += econ.costExVatOre;
     expectedDepOre += econ.expectedDepOre;
     linkedServiceOre += linked;
 
-    const key = b.carId;
-    const row = perCar.get(key) ?? {
+    const row = perCar.get(b.carId) ?? {
       carId: b.carId,
       label: `${b.car.make} ${b.car.model} (${b.car.registrationPlate})`,
       revenueExVatOre: 0,
@@ -467,12 +437,9 @@ export async function periodSummary(
     row.expectedDepOre += econ.expectedDepOre;
     row.linkedServiceOre += linked;
     row.bookingCount += 1;
-    // Driven km is only reliable once the rental is completed.
-    if (b.status === "completed") {
-      row.km += econ.distanceDriven ?? 0;
-    }
+    if (b.status === "completed") row.km += econ.distanceDriven ?? 0;
     row.days += econ.rentalDays;
-    perCar.set(key, row);
+    perCar.set(b.carId, row);
   }
 
   const unlinkedServiceOre = serviceEvents
@@ -483,18 +450,17 @@ export async function periodSummary(
   const rentedKm = [...perCar.values()].reduce((s, r) => s + r.km, 0);
   const allocKm = rentedKm || 1;
   for (const row of perCar.values()) {
-    const share = (row.km / allocKm) * unlinkedServiceOre;
-    row.linkedServiceOre += Math.round(share);
+    row.linkedServiceOre += Math.round((row.km / allocKm) * unlinkedServiceOre);
   }
 
-  const cars = await prisma.car.findMany({
-    where: { status: { not: "retired" } },
-    include: { fixedCosts: true },
-  });
-
+  const cars = data.cars.filter((c) => c.status !== "retired");
   let fixedCostOre = 0;
   for (const car of cars) {
-    const carFixed = sumProratedFixedCostsOre(car.fixedCosts, from, to);
+    const carFixed = sumProratedFixedCostsOre(
+      data.fixedCosts.filter((c) => c.carId === car.id),
+      from,
+      to,
+    );
     if (carFixed <= 0 && !perCar.has(car.id)) continue;
     fixedCostOre += carFixed;
     const row = perCar.get(car.id) ?? {
@@ -517,13 +483,10 @@ export async function periodSummary(
   const economicProfitOre =
     cashMarginOre - expectedDepOre - linkedServiceOre - unlinkedServiceOre;
   const actualProfitOre = economicProfitOre - fixedCostOre;
-
   const rentalDaysTotal = [...perCar.values()].reduce((s, r) => s + r.days, 0);
   const availableCarDays =
-    cars.length *
-    Math.max(1, Math.ceil((to.getTime() - from.getTime()) / 86400000));
-  const utilization =
-    availableCarDays > 0 ? rentalDaysTotal / availableCarDays : 0;
+    cars.length * Math.max(1, Math.ceil((to.getTime() - from.getTime()) / 86400000));
+  const utilization = availableCarDays > 0 ? rentalDaysTotal / availableCarDays : 0;
 
   return {
     bookingCount: bookings.length,
@@ -546,15 +509,7 @@ export async function periodSummary(
   };
 }
 
-/**
- * Annualize a total over an inclusive calendar-day span:
- * amount × 365 / (to − from + 1).
- */
-export function annualizedRunRate(
-  amount: number,
-  from: Date,
-  to: Date,
-): number {
+export function annualizedRunRate(amount: number, from: Date, to: Date): number {
   const days = Math.max(
     1,
     differenceInCalendarDays(startOfDay(to), startOfDay(from)) + 1,
@@ -562,7 +517,6 @@ export function annualizedRunRate(
   return Math.round((amount * 365) / days);
 }
 
-/** Min/max rental start among bookings — basis for run-rate day span. */
 export function rentalStartSpan(
   bookings: { plannedStartAt: Date }[],
 ): { from: Date; to: Date } | null {
@@ -576,107 +530,92 @@ export function rentalStartSpan(
   return { from, to };
 }
 
-export async function getAlerts() {
+export function getAlerts(data: AppData) {
   const now = new Date();
   const in7 = new Date(now.getTime() + 7 * 86400000);
 
-  const upcoming = await prisma.booking.findMany({
-    where: {
-      status: { in: ["confirmed", "active"] },
-      OR: [
-        { plannedStartAt: { gte: now, lte: in7 } },
-        { plannedEndAt: { gte: now, lte: in7 } },
-      ],
-    },
-    include: { car: true },
-    orderBy: { plannedStartAt: "asc" },
-    take: 12,
-  });
-
-  const missingOdo = await prisma.booking.findMany({
-    where: {
-      status: "completed",
-      drivenKm: null,
-    },
-    include: { car: true },
-    take: 10,
-  });
-
-  const inspectionDue = await prisma.car.findMany({
-    where: {
-      status: { not: "retired" },
-      nextInspectionDue: { lte: in7 },
-    },
-    orderBy: { nextInspectionDue: "asc" },
-    take: 10,
-  });
-
-  const carsWithInterval = await prisma.car.findMany({
-    where: {
-      status: { not: "retired" },
-      serviceIntervalKm: { not: null, gt: 0 },
-    },
-    include: {
-      serviceEvents: {
-        where: { type: "service", odometer: { not: null } },
-        orderBy: { occurredOn: "desc" },
-        take: 1,
+  const upcoming = data.bookings
+    .filter((b) => b.status === "confirmed" || b.status === "active")
+    .filter((b) => {
+      const start = asDate(b.plannedStartAt);
+      const end = asDate(b.plannedEndAt);
+      return (
+        (start >= now && start <= in7) || (end >= now && end <= in7)
+      );
+    })
+    .sort(
+      (a, b) =>
+        asDate(a.plannedStartAt).getTime() - asDate(b.plannedStartAt).getTime(),
+    )
+    .slice(0, 12)
+    .map((b) => ({
+      ...b,
+      car: data.cars.find((c) => c.id === b.carId) ?? {
+        registrationPlate: "—",
       },
-    },
-  });
+    }));
 
-  const serviceDue = carsWithInterval
+  const missingOdo = data.bookings
+    .filter((b) => b.status === "completed" && b.drivenKm == null)
+    .slice(0, 10)
+    .map((b) => ({
+      ...b,
+      car: data.cars.find((c) => c.id === b.carId) ?? {
+        registrationPlate: "—",
+      },
+    }));
+
+  const inspectionDue = data.cars
+    .filter(
+      (c) =>
+        c.status !== "retired" &&
+        c.nextInspectionDue != null &&
+        asDate(c.nextInspectionDue) <= in7,
+    )
+    .sort(
+      (a, b) =>
+        asDate(a.nextInspectionDue!).getTime() -
+        asDate(b.nextInspectionDue!).getTime(),
+    )
+    .slice(0, 10);
+
+  const serviceDue = data.cars
+    .filter(
+      (car) =>
+        car.status !== "retired" &&
+        car.serviceIntervalKm != null &&
+        car.serviceIntervalKm > 0,
+    )
     .map((car) => {
+      const last = data.serviceEvents
+        .filter((e) => e.carId === car.id && e.type === "service" && e.odometer != null)
+        .sort((a, b) => asDate(b.occurredOn).getTime() - asDate(a.occurredOn).getTime())[0];
       const interval = car.serviceIntervalKm!;
-      const lastOdo =
-        car.serviceEvents[0]?.odometer ?? car.purchaseOdometer ?? 0;
+      const lastOdo = last?.odometer ?? car.purchaseOdometer ?? 0;
       const dueAtKm = lastOdo + interval;
-      const kmRemaining = dueAtKm - car.currentOdometer;
       return {
         id: car.id,
         registrationPlate: car.registrationPlate,
         currentOdometer: car.currentOdometer,
         dueAtKm,
-        kmRemaining,
+        kmRemaining: dueAtKm - car.currentOdometer,
         intervalKm: interval,
       };
     })
-    .filter((c) => c.kmRemaining <= 2_000)
+    .filter((c) => c.kmRemaining <= 2000)
     .sort((a, b) => a.kmRemaining - b.kmRemaining)
     .slice(0, 10);
 
   return { upcoming, missingOdo, inspectionDue, serviceDue };
 }
 
-/**
- * Book value of active fleet: purchase − accumulated dep.
- * Completed bookings contribute their expected depreciation (days×daily + km×per-km).
- * Any extra odometer/ownership beyond those bookings is depreciated the same way,
- * so stale/low currentOdometer cannot zero out booking dep.
- */
-export async function fleetExpectedValue(
-  asOf: Date = new Date(),
-  fits?: FitCache,
+export function fleetExpectedValue(
+  data: AppData,
+  asOf: Date,
+  fits: FitCache,
 ) {
-  const [cars, fitMap] = await Promise.all([
-    prisma.car.findMany({
-      where: { status: { not: "retired" } },
-      include: {
-        marketModel: { select: { variant: true } },
-        bookings: {
-          where: { status: "completed" },
-          select: {
-            plannedStartAt: true,
-            plannedEndAt: true,
-            drivenKm: true,
-          },
-        },
-      },
-    }),
-    fits ? Promise.resolve(fits) : loadMarketFitCache(),
-  ]);
+  const cars = data.cars.filter((c) => c.status !== "retired");
   const today = startOfDay(asOf);
-
   let purchaseTotalOre = 0;
   let expectedValueOre = 0;
   let accumulatedDepOre = 0;
@@ -690,34 +629,33 @@ export async function fleetExpectedValue(
     }
     valuedCars += 1;
     purchaseTotalOre += car.purchasePriceOre;
-
-    const rates = effectiveDepRates(asMarketCar(car), fitMap);
+    const rates = effectiveDepRates(asMarketCar(car, data.marketModels), fits);
     let bookingDepOre = 0;
     let bookingKm = 0;
     let bookingDays = 0;
-    for (const b of car.bookings) {
-      bookingDepOre += expectedDepreciationOre(b, rates);
+    for (const b of data.bookings.filter(
+      (x) => x.carId === car.id && x.status === "completed",
+    )) {
+      const booking = {
+        plannedStartAt: asDate(b.plannedStartAt),
+        plannedEndAt: asDate(b.plannedEndAt),
+        drivenKm: b.drivenKm,
+      };
+      bookingDepOre += expectedDepreciationOre(booking, rates);
       bookingKm += Math.max(0, b.drivenKm ?? 0);
-      bookingDays += rentalDays(b);
+      bookingDays += rentalDays(booking);
     }
-
     const ownedDays =
       car.purchaseDate != null
-        ? Math.max(0, differenceInCalendarDays(today, startOfDay(car.purchaseDate)))
+        ? Math.max(0, differenceInCalendarDays(today, startOfDay(asDate(car.purchaseDate))))
         : 0;
-    const odoKm = Math.max(
-      0,
-      car.currentOdometer - (car.purchaseOdometer ?? 0),
-    );
+    const odoKm = Math.max(0, car.currentOdometer - (car.purchaseOdometer ?? 0));
     const extraKm = Math.max(0, odoKm - bookingKm);
     const extraDays = Math.max(0, ownedDays - bookingDays);
     const depOre =
-      bookingDepOre +
-      extraKm * rates.depPerKmOre +
-      extraDays * rates.depPerDayOre;
-    const valueOre = Math.max(0, car.purchasePriceOre - depOre);
+      bookingDepOre + extraKm * rates.depPerKmOre + extraDays * rates.depPerDayOre;
+    expectedValueOre += Math.max(0, car.purchasePriceOre - depOre);
     accumulatedDepOre += Math.min(car.purchasePriceOre, depOre);
-    expectedValueOre += valueOre;
   }
 
   return {

@@ -11,11 +11,8 @@
 # testing
 /coverage
 
-# next.js
-/.next/
-/out/
-
 # production
+/dist
 /build
 
 # misc
@@ -37,9 +34,3 @@ yarn-error.log*
 
 # typescript
 *.tsbuildinfo
-
-# prisma / local databases
-prisma/*.db
-prisma/*.db-journal
-prisma/sqlite-export/
-/src/generated/prisma

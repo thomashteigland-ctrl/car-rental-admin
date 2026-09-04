@@ -1,47 +1,54 @@
 # Car rental admin
 
-Internal admin for rental fleet ops and FINN.no market pricing (Next.js / TypeScript / Prisma / Supabase).
-
-## Stack
-
-- Next.js (App Router) + TypeScript + React
-- Supabase Postgres (`rental` schema) via Prisma
-- On-demand FINN scrape via `POST /api/scrape` (needs longer `maxDuration` on Vercel)
+Internal fleet admin (Vite + React + TypeScript) backed by Supabase.
 
 ## Local setup
 
-1. In Supabase SQL editor (once):
+1. Copy env:
 
-```sql
-create schema if not exists rental;
+```powershell
+Copy-Item .env.example .env
 ```
 
-2. Copy env and set **pooler** URIs from Supabase → Project Settings → Database  
-   (Transaction pooler `:6543` for `DATABASE_URL`, Session pooler `:5432` for `DIRECT_URL`).
+Fill in:
 
-```bash
-cp .env.example .env
-# set DATABASE_URL + DIRECT_URL
+```env
+PUBLIC_SUPABASE_URL="https://YOUR_PROJECT.supabase.co"
+PUBLIC_SUPABASE_ANON_KEY="your-anon-or-publishable-key"
+```
+
+2. In Supabase Dashboard → **API → Exposed schemas**, include `rental`.
+
+3. In the SQL Editor, run [`supabase/grants.sql`](supabase/grants.sql) once (anon needs `USAGE` on the `rental` schema).
+
+4. Start:
+
+```powershell
 npm install
-npx prisma migrate deploy
-npm run db:seed
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
+Open [http://localhost:5173](http://localhost:5173).
 
-## Vercel
+## Vercel (push to main)
 
-This repo root **is** the Next.js app (no subdirectory).
+This repo root **is** the Vite app (no Next.js / Prisma).
 
-1. Import [thomashteigland-ctrl/car-rental-admin](https://github.com/thomashteigland-ctrl/car-rental-admin) in Vercel
-2. Set env vars: `DATABASE_URL`, `DIRECT_URL` (same pooler URIs as local)
-3. Deploy — `npm run build` runs `prisma migrate deploy` then `next build`
+1. Project already linked to this GitHub repo — push `main` to deploy.
+2. In Vercel → **Settings → Environment Variables**, set for Production (and Preview if you want). Any of these name pairs work:
+   - `PUBLIC_SUPABASE_URL` + `PUBLIC_SUPABASE_ANON_KEY` (preferred)
+   - or `NEXT_PUBLIC_SUPABASE_URL` + `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+3. If the project still has old Next.js settings, set:
+   - Framework Preset: **Vite** (or leave `vercel.json` to drive it)
+   - Build Command: `npm run build`
+   - Output Directory: `dist`
+4. Redeploy after saving env vars (Vite bakes these in at **build** time). You can remove unused `DATABASE_URL` / `DIRECT_URL` if they are still set.
 
-Scrape route `maxDuration` is 300s (`vercel.json`); Hobby plans may time out on long scrapes.
+`vercel.json` already configures SPA routing so React Router deep links work.
 
 ## What you can do
 
 - **Dashboard** — fleet value, weekly earnings, month P&L
-- **Market** — FINN price vs km chart, filters, Run scrape
+- **Market** — opens the separate FINN scrape app (`PUBLIC_MARKET_APP_URL`)
 - **Cars / Bookings / Calendar / Service / Reports** — fleet ops
+- **Settings** — categories, reload from Supabase, JSON backup

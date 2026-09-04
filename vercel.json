@@ -1,7 +1,8 @@
 {
-  "functions": {
-    "src/app/api/scrape/route.ts": {
-      "maxDuration": 300
-    }
-  }
+  "framework": "vite",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "rewrites": [
+    { "source": "/((?!assets/).*)", "destination": "/index.html" }
+  ]
 }

@@ -1,5 +1,3 @@
-"use client";
-
 import { useMemo, useState } from "react";
 import { parseISO, startOfDay, startOfWeek } from "date-fns";
 import {
